@@ -31,10 +31,20 @@ typedef struct
 	float32_t _Kw_Te;
 } pi_instance;
 
+static __inline__ float32_t ot_modulo_2pi(float32_t theta)
+{
+    uint32_t theta_k;
+    float32_t theta_modulo;
+    theta_k = ((int32_t)(theta * INV_MODULO_RES)) & (MODULO_SIZE);
+    theta_modulo = (MODULO_RES * (float32_t)  theta_k);
+    return theta_modulo;
+}
+
+
 static __inline__  float32_t ot_sin(float32_t theta)
 {
 	uint32_t theta_k;
-	theta_k = ((int32_t)(theta * RAD_TO_INTEGER)) & (SINUS_ARRAY_SIZE-1);
+	theta_k = ((int32_t)(ot_modulo_2pi(theta) * RAD_TO_INTEGER)) & (SINUS_ARRAY_SIZE-1);
 	return sin_array[theta_k];
 }
 
@@ -222,4 +232,71 @@ float32_t pr_resonant(float32_t reference, float32_t mesure, float32_t w0, float
 
 	return (pr_params->Kp * pr_params->num[0] + pr_params->Ki * pr_params->den[0]);
 }
+
+
+//----------------------------------------------------------------------------------
+//--- PLL ANGLE --------------------------------------------------------------------
+//----------------------------------------------------------------------------------
+typedef struct { 
+        float32_t Kp; /*!< proportional gain of pll PI */ 		
+        float32_t Ki; /*!< integral gain of pll PI */ 
+        float32_t tau_filt; /*! constant time tau [s] */
+        //TODO: compute Kp and Ki with constructor with wc and xsi.
+        float32_t w;
+        float32_t w_filt;
+        float32_t theta;
+        float32_t Ts;
+        float32_t _integral;
+        float32_t _a1;
+        float32_t _b1;
+} pll_angle_t;
+
+int pll_angle_init(pll_angle_t *params, float32_t Ts, float32_t Kp, float32_t Ki, float32_t tau_filt)
+{
+    // Ki = wn^2;
+    // Kp = 2*xsi/wn*Ki;
+    float32_t a1;
+    params->Kp = Kp;
+    params->Ki = Ki;
+    params->Ts = Ts;
+    params->theta = 0.0;
+    params->w = 0.0;
+    params->_integral = 0.0;
+    params->tau_filt = tau_filt;
+    a1 = -(1.0 - Ts/tau_filt + 0.5*(Ts / tau_filt) * (Ts / tau_filt)); // series expansion of -exp(-Te/tau)
+    params->_a1 = a1;
+    params->_b1 = 1 + a1;
+    return 0;
+}
+
+int pll_angle_reset(pll_angle_t *params)
+{
+    params->theta = 0.0;
+    params->w = 0.0;
+    params->_integral = 0.0;
+    return 0;
+}
+
+
+float32_t pll_angle_step(float32_t theta_mes, float32_t w_est, pll_angle_t *params)
+{
+    float32_t error;
+    error = ot_sin(theta_mes - params->theta);
+    params->_integral = params->_integral + params->Ki * params->Ts * error;
+    //TODO: add bounds
+    params->w = w_est + params->Kp * error + params->_integral;
+    params->w_filt = -params->_a1 * params->w_filt + params->_b1 * params->w;
+    params->theta = (params->theta + params->w * params->Ts);
+    params->theta = ot_modulo_2pi(params->theta);
+    return params->theta;
+}
+
+int pll_angle_compute_pi(float32_t fc, float32_t xi, pll_angle_t *params) 
+{
+    // const float32_t fc = 100.0;
+    params->Ki = 2.0 * (2. * M_PI * fc) * (2. * M_PI * fc);
+    params->Kp = 4.0 * (2. * M_PI * fc) * xi;
+    return 0;
+}
+
 

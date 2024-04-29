@@ -8,4 +8,7 @@ extern const float32_t RAD_TO_INTEGER;
 extern const float32_t SQRT3_INVERSE;
 extern const float32_t SQRT3_DIV_2;
 extern const float32_t PI_DIV_2;
+extern const uint32_t MODULO_SIZE;     
+extern const float32_t INV_MODULO_RES;
+extern const float32_t MODULO_RES;
 extern const float sin_array[SINUS_ARRAY_SIZE]; 

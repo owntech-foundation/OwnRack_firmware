@@ -1,4 +1,5 @@
 #include <arm_math.h>
+#include "sin_tab.h"
 /* sin in float and sin in Integer */
 #ifndef M_PI
     #define  M_PI  3.1415926535897932384626433
@@ -7,7 +8,9 @@ const float32_t RAD_TO_INTEGER = 162.9746617261;
 const float32_t SQRT3_INVERSE  = 0.577350269;
 const float32_t SQRT3_DIV_2    = 0.866025404;
 const float32_t PI_DIV_2       = 1.570796327; 
-#define SINUS_ARRAY_SIZE 1024
+const uint32_t MODULO_SIZE     = 32767;  // 2**15-1
+const float32_t INV_MODULO_RES = 32767.0 / (2.0 * M_PI);
+const float32_t MODULO_RES     = (2.0 * M_PI) / 32767.0;
 
 const float sin_array[SINUS_ARRAY_SIZE] = {
 	0.0,
