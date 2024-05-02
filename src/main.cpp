@@ -33,11 +33,10 @@
 #include "TwistAPI.h"
 #include "SpinAPI.h"
 #include "CommunicationAPI.h"
-
+#include "pr.h"
+#include "filters.h"
+#include "transform.h"
 //----------- USER INCLUDE ----------------------
-#include "park.h"
-#include "sin_tab.h"
-#include "iir_filters.h"
 
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/kernel.h"
@@ -115,14 +114,13 @@ int8_t AppTask_num;             // Application Task number
 
 
 //------------- PR RESONANT -------------------------------------
-pr_params_t pr_params;
 float32_t w0;
-
-static FirstOrderFilter vHigh_filter(100e-6, 1e-3);
+static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
+static float32_t vHigh_filtered;
 //--------------USER VARIABLES DECLARATIONS----------------------
 
 static uint32_t control_task_period = 100; //[us] period of the control task
-
+static float32_t Ts = (float32_t ) control_task_period * 1.0e-6F;
 uint8_t received_serial_char;
 
 /* Measure variables */
@@ -146,6 +144,8 @@ uint8_t is_pr_regul = 0;
 /* Sinewave settings */
 float f0 = 10;
 float angle;
+PrParams pr_params = PrParams(Ts, 0.001, 300.0, 0.0, 0.0, -48.0, 48.0);
+Pr prop_res = Pr();
 
 
 //debug 
@@ -350,15 +350,7 @@ void setup_routine()
     communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // RS485 at 20Mbits/s
 
     // PR RESONANT
-    pr_params.Ki = 300.0;
-    pr_params.Kp = 0.001;
-    pr_params.Ts = 100.0e-6;
-    pr_params.num[0] = 0.0;
-    pr_params.num[1] = 0.0;
-    pr_params.den[0] = 0.0;
-    pr_params.den[1] = 0.0;
-    pr_params.den[2] = 0.0;
-
+    prop_res.init(pr_params);
 }
 
 //--------------LOOP FUNCTIONS--------------------------------
@@ -413,7 +405,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     if (meas_data != -10000)
         V_high = meas_data;
     
-    vHigh_filter.step(V_high);
+    vHigh_filtered = vHigh_filter.calculateWithReturn(V_high);
 
 //------- STATE CALCULATION ----------------------------------------------------
     if (  ((I1_low_value > CURRENT_LIMIT)
@@ -449,7 +441,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
     if (control_state == POWER)
     {
-        duty_cycle_leg1 = Vref / VOLTAGE_SCALE;
+        duty_cycle_leg1 = 1.0 / VOLTAGE_SCALE * Vref;
 
         if (w0 > 25)  { 
             is_pr_regul = 1;
@@ -458,9 +450,11 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
         }
 
         if (is_pr_regul == 1) { 
-            duty_cycle_leg2 = (Vref + pr_resonant(I1_low_value, I2_low_value, w0, 0.0, &pr_params)) / VOLTAGE_SCALE;
+            prop_res.setW0(w0);
+            duty_cycle_leg2 = 1.0 / VOLTAGE_SCALE * (Vref + prop_res.calculateWithReturn(I1_low_value, I2_low_value));
+            //duty_cycle_leg2 = (Vref + pr_resonant(I1_low_value, I2_low_value, w0, 0.0, &pr_params)) / VOLTAGE_SCALE;
         } else if (is_pr_regul == 0) {
-            duty_cycle_leg2 = Vref / VOLTAGE_SCALE;
+            duty_cycle_leg2 = 1.0 / VOLTAGE_SCALE * Vref; 
         }
 
         twist.setLegDutyCycle(LEG1, duty_cycle_leg1);
@@ -479,7 +473,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     {
         record_array[counter].I1_low = I1_low_value;
         record_array[counter].V_low = V1_low_value;
-        record_array[counter].Vhigh_value = vHigh_filter.get_value();
+        record_array[counter].Vhigh_value = vHigh_filtered;
         record_array[counter].duty_cycle = (float32_t) (total_ns*0.001);
         record_array[counter].I2_low = I2_low_value;
         record_array[counter].Vref = Vref;
