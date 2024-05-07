@@ -35,9 +35,9 @@
 #include "CommunicationAPI.h"
 
 //----------- USER INCLUDE ----------------------
-#include "park.h"
-#include "sin_tab.h"
-#include "iir_filters.h"
+#include "pid.h"
+#include "transform.h"
+#include "filters.h"
 
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/kernel.h"
@@ -114,8 +114,7 @@ float32_t ot_sqrt(float32_t in)
 	return out;
 }
 
-pll_angle_t pll_datas;
-
+PllDatas pll_datas;
 
 //--------------SETUP FUNCTIONS DECLARATION-------------------
 void setup_routine(); // Setups the hardware and software of the system
@@ -127,8 +126,10 @@ void loop_application_task();   // code to be executed in the fast application t
 int8_t AppTask_num;             // Application Task number
 void loop_control_task();       // code to be executed in real-time at 20kHz
 
+static uint32_t control_task_period = 100; //[us] period of the control task
+static bool pwm_enable = false;            //[bool] state of the PWM (ctrl task)
 
-static FirstOrderFilter vHigh_filter(100e-6, 1e-3);
+static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
 // --- SIN-COS SCALING ------------------------------------------
 // en haute impedance.
 const float SINCOS_AMP = 1.0 / 620.0; // 1.0 / 588.0;
@@ -144,15 +145,24 @@ static float f0 = 0;
 static float angle;
 static float Iq_ref;
 // control
-static park_t Idq;
-static park_t Vdq;
-static park_t Idq_ref;
+static dqo_t Idq;
+static dqo_t Vdq;
+static dqo_t Idq_ref;
 static three_phase_t Vabc;
 static three_phase_t Iabc;
-static pi_instance pi_d;
-static pi_instance pi_q;
 static float32_t Vdq_module;
 static float32_t Idq_module;
+static Transform transform;
+static Pid pi_d;
+static Pid pi_q;
+static PllAngle pllAngle;
+static const float32_t Ts = control_task_period * 1.0e-6F;
+static const float32_t Kp = 0.035F;
+static const float32_t Ti = 0.001029F;
+static const float32_t Td = 0.0F;
+static const float32_t N = 1.0F;
+static const float32_t lower_bound = -60.0F;
+static const float32_t upper_bound = 60.0F;
 
 static float32_t Voffset = 25.0;
 static float32_t startup_time;
@@ -167,8 +177,6 @@ float32_t w0;
 
 //--------------USER VARIABLES DECLARATIONS----------------------
 
-static uint32_t control_task_period = 100; //[us] period of the control task
-static bool pwm_enable = false;            //[bool] state of the PWM (ctrl task)
 
 uint8_t received_serial_char;
 
@@ -352,26 +360,13 @@ void setup_routine()
     communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // custom configuration for RS485
 
     /* for park control */
-
+    PidParams pid_p(Ts, Kp, Ti, Td, N, lower_bound, upper_bound);
     // pi for d axis
-    pi_d.Ki = 34.0;
-    pi_d.Kp = 0.035;
-    pi_d.Kw = 35.0 * 0.01;
-    pi_d.control_period_us = 100.0;
-    pi_d.lower_bound = -60.0;
-    pi_d.upper_bound = 60.0;
-
+    pi_d.init(pid_p);
     // pi for q axis
-    pi_q.Ki = 34.0;
-    pi_q.Kp = 0.035;
-    pi_q.Kw = 35.0 * 0.01;
-    pi_q.control_period_us = 100.0;
-    pi_q.lower_bound = -60.0;
-    pi_q.upper_bound = 60.0;
-
-    pi_init(&pi_d);
-    pi_init(&pi_q);
-
+    pi_q.init(pid_p);
+    pllAngle.init(Ts, f0, 0.05F);
+    pllAngle.reset(0.F);
     Vabc.a = 0.0;
     Vabc.b = 0.0;
     Vabc.c = 0.0;
@@ -380,10 +375,6 @@ void setup_routine()
     Iabc.a = 0.0;
     Iabc.b = 0.0;
     Iabc.c = 0.0;
-
-    pll_angle_init(&pll_datas, 100e-6, 0.0, 0.0, 5e-3);
-    pll_angle_compute_pi(10.0, 0.7, &pll_datas);
-
 }
 
 //--------------LOOP FUNCTIONS--------------------------------
@@ -510,12 +501,12 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     sin_theta = (int32_t) (sin_value * 2147483648.0);
     LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
     LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
-    angle_cordic = M_PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of x+iy
-    w0 = 2.0F * M_PI * f0;
+    angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of x+iy
+    w0 = 2.0F * PI * f0;
     //angle += w0 * control_task_period * 1.0e-6F;
     //angle = ot_modulo_2pi(angle);
-    pll_angle_step(angle_cordic, 0.0, &pll_datas);
-    angle = ot_modulo_2pi((4.0 * (M_PI - pll_datas.theta) + f0));
+    pll_datas = pllAngle.calculateWithReturn(angle_cordic);
+    angle = ot_modulo_2pi((4.0 * (PI - pll_datas.angle)));
     
 
     switch (control_state)
@@ -550,8 +541,8 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
     if (control_state == IDLE || control_state == OVERCURRENT)
     {
-        pi_d.integral = 0.0;
-        pi_q.integral = 0.0;
+        pi_d.reset(0.0);
+        pi_q.reset(0.0);
         SET_STATUS_IDLE(tx_consigne.id_and_status);
         SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
         if (stop_recording == 1)
@@ -580,23 +571,23 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
         Idq_ref.q = Iq_ref;
         Idq_ref.d = 0.0;
-        Iabc_ref = park_inverse(Idq_ref, angle);
+        Iabc_ref = transform.to_threephase(Idq_ref, angle);
 
         Iabc.a  = I1_low_value_from_slave_a;
         Iabc.b  = I1_low_value_from_slave_b;
         Iabc.c  = I1_low_value_from_slave_c;
 
-        Idq = park(Iabc, angle);
+        Idq = transform.to_dqo(Iabc, angle);
 
-        Vdq.d = pi_calc(Idq_ref.d, Idq.d, &pi_d);
-        Vdq.q = pi_calc(Idq_ref.q, Idq.q, &pi_q);
+        Vdq.d = pi_d.calculateWithReturn(Idq_ref.d, Idq.d);
+        Vdq.q = pi_q.calculateWithReturn(Idq_ref.q, Idq.q);
 
         Idq_module = ot_sqrt(Idq.d*Idq.d + Idq.q*Idq.q);
         Vdq_module = ot_sqrt(Vdq.d*Vdq.d + Vdq.q*Vdq.q);
         // REMOVE CURRENT CONTROL
         //Vdq.d = 0.0;
         //Vdq.q = Iq_ref;
-        Vabc = park_inverse(Vdq, angle);
+        Vabc = transform.to_threephase(Vdq, angle);
         Vabc.a += Voffset; 
         Vabc.b += Voffset; 
         Vabc.c += Voffset; 
@@ -617,7 +608,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
         PUT_LOWER_12BITS(tx_consigne.buf_VcIac, to_12bits(Vabc.c, VOLTAGE_SCALE));
 
         /* Writting frequency reference */
-        PUT_UPPER_12BITS(tx_consigne.buf_IbW, to_12bits(pll_datas.w_filt, 500.0)); 
+        PUT_UPPER_12BITS(tx_consigne.buf_IbW, to_12bits(pll_datas.w, 500.0)); 
 
         if (stop_recording == 1)
            RESET_COUNTER(tx_consigne.id_and_status); 
@@ -635,14 +626,14 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     if (counter_time % decimation == 0)
     {
         record_array[counter].angle_cordic = angle_cordic;
-        record_array[counter].angle_pll = pll_datas.theta;
+        record_array[counter].angle_pll = pll_datas.angle;
         record_array[counter].V_a = Vabc.a;
         record_array[counter].V_b = Vabc.b;
         record_array[counter].V_c = Vabc.c;
         record_array[counter].I_a = Iabc.a;
         record_array[counter].I_b = Iabc.b;
         record_array[counter].I_c = n_receive_calls;
-        record_array[counter].w = pll_datas.w_filt;
+        record_array[counter].w = pll_datas.w;
         if (stop_recording == 0 && control_state != OVERCURRENT)
         {
             counter = (counter + 1) & 0x7FF;
