@@ -41,6 +41,7 @@
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/kernel.h"
 #include "zephyr/console/console.h"
+#include <cstdint>
 #include <zephyr/timing/timing.h>
 
 //---------- LL drivers --------------------------
@@ -49,18 +50,16 @@
 
 #define DMA_BUFFER_SIZE 10 // 3 byte for Va/Vb, 3 byte for Vc/(Ia/Ic), 3 byte for Ib and w, and 1 byte for identifiant
 
-#ifndef SPIN_MODE
-#define SPIN_MODE 0
-#endif
-#define SLAVE_A 1
-#define SLAVE_B 2
-#define SLAVE_C 3
+uint8_t SPIN_MODE = 0;
+#define SLAVE_A 0x3A004D 
+#define SLAVE_B 0x58002F 
+#define SLAVE_C 0x400040 
 
 #define RS_ID_MASTER 0 
 #define RS_ID_SLAVE_A 1 
 #define RS_ID_SLAVE_B 2 
 #define RS_ID_SLAVE_C 3 
-char ID[] = {'M', 'A', 'B', 'C'};
+char TXT_ID[] = {'M', 'A', 'B', 'C'};
 uint32_t n_receive_calls = 0;
 uint8_t stop_recording = 0;
 #define CURRENT_LIMIT 9.0
@@ -103,6 +102,10 @@ float32_t from_12bits(int16_t data, float32_t scale, float offset = 0.0)
     return ((scale * (float32_t) data) / 4095.0)  - offset;
 }
 
+// to get the processor unique id 96 bits data 
+unsigned int *uid_0 = (unsigned int *) 0x1FFF7590;
+unsigned int *uid_1 = (unsigned int *) 0x1FFF7594;
+unsigned int *uid_2 = (unsigned int *) 0x1FFF7598;
 
 //--------------SETUP FUNCTIONS DECLARATION-------------------
 void setup_routine(); // Setups the hardware and software of the system
@@ -129,7 +132,6 @@ static float32_t I1_low_value = 0.0;
 static float32_t I2_low_value = 0.0;
 static float32_t V_high;
 
-static float32_t Iref; // current reference from master
 static float32_t Vref = 0.0; // voltage reference from master
 
 static float meas_data; // temp storage meas value (ctrl task)
@@ -226,12 +228,15 @@ timing_t time_tic;
 uint64_t total_cycles;
 uint64_t total_ns;
 
-void reception_function(void)
-{
+uint32_t spin_mode(void) {
+    return *uid_0;
+}
 
-uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
-uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
-#if SPIN_MODE == SLAVE_A
+// TODO: make more generic reception function
+void reception_slave_A(void)
+{
+    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
+    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
     if (rs_id == RS_ID_MASTER &&  rs_status == POWER)
     {
         /*reception of data*/
@@ -250,15 +255,22 @@ uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
     {
         status = rs_status;
     }
+    if (rs_id == RS_ID_MASTER) {
+        if (REROLL_COUNTER(rx_consigne.id_and_status)) 
+            stop_recording = 1;//counter = 0;
+        else 
+            stop_recording = 0;
+    }
+    n_receive_calls = (n_receive_calls + 1) % 5000;
+}
 
-#endif
-
-#if SPIN_MODE == SLAVE_B
+void reception_slave_B() {
+    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
+    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
     if (rs_id == RS_ID_SLAVE_A && rs_status == POWER)
     {
         status = rs_status;
         Vref = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_Vab), VOLTAGE_SCALE);
-        Iref = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_VcIac), 40.0, 20.0);
         w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0);
         tx_consigne = rx_consigne;
         PUT_LOWER_12BITS(tx_consigne.buf_IbW, to_12bits(I1_low_value, 40.0, 20.0));
@@ -273,36 +285,43 @@ uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
     {
         status = rs_status;
     }
-
-#endif
-
-#if SPIN_MODE == SLAVE_C
-    if (rs_id == RS_ID_SLAVE_B && rs_status == POWER)
-    {
-        status = rs_status;
-        Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_VcIac), VOLTAGE_SCALE);
-        w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0);
-        tx_consigne = rx_consigne;
-        SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
-
-        if (control_state == OVERCURRENT)
-            SET_OVERCURRENT(tx_consigne.id_and_status);            
-
-        PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
-        communication.rs485.startTransmission();
-    }
-    else if (rs_id == RS_ID_MASTER && rs_status == IDLE)
-    {
-        status = rs_status;
-    }
-#endif
     if (rs_id == RS_ID_MASTER) {
         if (REROLL_COUNTER(rx_consigne.id_and_status)) 
             stop_recording = 1;//counter = 0;
         else 
             stop_recording = 0;
     }
-    n_receive_calls++;
+    n_receive_calls = (n_receive_calls + 1)%5000;
+}
+
+void reception_slave_C() {
+    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
+    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
+    if (rs_id == RS_ID_SLAVE_B && rs_status == POWER)
+    {
+        status = rs_status;
+        Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_VcIac), VOLTAGE_SCALE);
+        w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0);
+        tx_consigne = rx_consigne;
+        PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
+        SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
+
+        if (control_state == OVERCURRENT)
+            SET_OVERCURRENT(tx_consigne.id_and_status);            
+
+        communication.rs485.startTransmission();
+    }
+    else if (rs_id == RS_ID_MASTER && rs_status == IDLE)
+    {
+        status = rs_status;
+    }
+    if (rs_id == RS_ID_MASTER) {
+        if (REROLL_COUNTER(rx_consigne.id_and_status)) 
+            stop_recording = 1;//counter = 0;
+        else 
+            stop_recording = 0;
+    }
+    n_receive_calls = (n_receive_calls + 1)%5000;
 }
 
 //--------------SETUP FUNCTIONS-------------------------------
@@ -326,29 +345,31 @@ void setup_routine()
 
     //------ software init -----
     data.enableTwistDefaultChannels();
-
-#if SPIN_MODE == SLAVE_A // calibration for N1
-    data.setParameters(I1_LOW, 4.56, -9367.00);
-    data.setParameters(I2_LOW, 5.51, -11351.00);
-#endif
-
-#if SPIN_MODE == SLAVE_C // calibration for N0
-    data.setParameters(I1_LOW, 5.406, -11426.00);
-    data.setParameters(I2_LOW, 5.31, -10747.00);
-#endif
-
-#if SPIN_MODE == SLAVE_B // calibration for N4
-    data.setParameters(I1_LOW, 4.679, -9551.00);
-    data.setParameters(I2_LOW, 4.523, -9281.00);
-#endif
+    switch (spin_mode()) {
+        case SLAVE_A:
+            data.setParameters(I1_LOW, 4.56, -9367.00);
+            data.setParameters(I2_LOW, 5.51, -11351.00);
+            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_A, SPEED_20M); // RS485 at 20Mbits/s
+            SPIN_MODE = 1;
+        break;
+        case SLAVE_B:
+            data.setParameters(I1_LOW, 4.679, -9551.00);
+            data.setParameters(I2_LOW, 4.523, -9281.00);
+            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_B, SPEED_20M); // RS485 at 20Mbits/s
+            SPIN_MODE = 2;
+        break;
+        case SLAVE_C:
+            data.setParameters(I1_LOW, 5.406, -11426.00);
+            data.setParameters(I2_LOW, 5.31, -10747.00);
+            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_C, SPEED_20M); // RS485 at 20Mbits/s
+            SPIN_MODE = 3;
+        break;
+    }
 
     AppTask_num = task.createBackground(loop_application_task);
     task.startBackground(AppTask_num);
-    
     task.createCritical(&loop_control_task, control_task_period);
     task.startCritical();
-    communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // RS485 at 20Mbits/s
-
     // PR RESONANT
     prop_res.init(pr_params);
 }
@@ -362,11 +383,10 @@ void setup_routine()
  */
 void loop_application_task()
 {
-    printk("%c: %s: %i: %f: %f\n", ID[SPIN_MODE], state_msg[control_state], stop_recording, var_Vref, var_I1);
+    printk("%c: %s: %i: %f: %f\n", TXT_ID[SPIN_MODE], state_msg[control_state], stop_recording, var_Vref, var_I1);
     if (counter != 0) printk("!!!");
-    if (n_receive_calls > 5000) {
+    if (n_receive_calls > 2500) {
         spin.led.toggle();
-        n_receive_calls = 0;
     }
 
     // Pause between two runs of the task
@@ -385,24 +405,26 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     counter_time++;
 //------- MEASURES -------------------------------------------------------------
     meas_data = data.getLatest(I1_LOW);
-    if (meas_data < 10000 && meas_data > -10000)
+    if (meas_data != NO_VALUE)
         I1_low_value = meas_data / 1000.0;
 
     meas_data = data.getLatest(V1_LOW);
-    if (meas_data != -10000)
+    if (meas_data != NO_VALUE)
         V1_low_value = meas_data;
 
     meas_data = data.getLatest(I2_LOW);
-    if (meas_data < 10000 && meas_data > -10000)
+    if (meas_data != NO_VALUE)
         I2_low_value = meas_data / 1000.0;
-    #if SPIN_MODE == SLAVE_A
-    if(I2_low_value >= CURRENT_LIMIT)
-        I2_low_value = CURRENT_LIMIT - 0.1;
-    else if (I2_low_value <= -CURRENT_LIMIT)
-        I2_low_value = -CURRENT_LIMIT + 0.1;
-    #endif
+    
+    if (spin_mode() == SLAVE_A) { // FIXME: to remember why we make that ???
+        if(I2_low_value >= CURRENT_LIMIT)
+            I2_low_value = CURRENT_LIMIT - 0.1;
+        else if (I2_low_value <= -CURRENT_LIMIT)
+            I2_low_value = -CURRENT_LIMIT + 0.1;
+    }
+
     meas_data = data.getLatest(V_HIGH);
-    if (meas_data != -10000)
+    if (meas_data != NO_VALUE)
         V_high = meas_data;
     
     vHigh_filtered = vHigh_filter.calculateWithReturn(V_high);
