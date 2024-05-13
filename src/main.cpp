@@ -36,8 +36,10 @@
 
 //----------- USER INCLUDE ----------------------
 #include "pid.h"
+#include "stm32g4xx.h"
 #include "transform.h"
 #include "filters.h"
+#include "ScopeMimicry.h"
 
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/kernel.h"
@@ -66,14 +68,13 @@
     id_and_status |= ((value & 0x3) << 6);\
     }
 
-#define IS_OVERCCURRENT(id_and_status) ((id_and_status >> 5) & 1) // check current for safety
-#define GET_STATUS(id_and_status) (id_and_status & 1)             // check the status (IDLE MODE or POWER MODE)
-#define REROLL_COUNTER(id_and_status) ((id_and_status >> 1) & 1)  // reroll counter to monitor the intern variables
-
-#define SET_STATUS_IDLE(id_and_status) (id_and_status &= 0xFE)   // assume that id_and_status is only one byte
-#define SET_STATUS_POWER(id_and_status) (id_and_status |= 0x1)   // bit 0 set to 1)
-#define RESET_COUNTER(id_and_status) (id_and_status |= 0x2)      // bit 1 set to 1
-#define KEEP_COUNT(id_and_status) (id_and_status &= 0x0fd)      // bit 1 set to 0
+#define IS_OVERCCURRENT(id_and_status)  ((id_and_status >> 5) & 1) // check current for safety
+#define GET_STATUS(id_and_status)       (id_and_status & 1)        // check the status (IDLE MODE or POWER MODE)
+#define REROLL_COUNTER(id_and_status)   ((id_and_status >> 1) & 1) // reroll counter to monitor the intern variables
+#define SET_STATUS_IDLE(id_and_status)  (id_and_status &= 0xFE)    // assume that id_and_status is only one byte
+#define SET_STATUS_POWER(id_and_status) (id_and_status |= 0x1)     // bit 0 set to 1)
+#define RESET_COUNTER(id_and_status)    (id_and_status |= 0x2)     // bit 1 set to 1
+#define KEEP_COUNT(id_and_status)       (id_and_status &= 0x0fd)   // bit 1 set to 0
 
 #define GET_UPPER_12BITS(buf_3bytes) ((int16_t) ((*(buf_3bytes + 2) << 4) + (*(buf_3bytes + 1) >> 4)))
 
@@ -115,6 +116,7 @@ float32_t ot_sqrt(float32_t in)
 }
 
 PllDatas pll_datas;
+static float32_t w;
 
 //--------------SETUP FUNCTIONS DECLARATION-------------------
 void setup_routine(); // Setups the hardware and software of the system
@@ -141,7 +143,7 @@ float32_t angle_cordic;
 
 //--------------FOR PARK CONTROL --------------------------------
 /* Sinewave settings */
-static float f0 = 0;
+static float f0_ref = 0;
 static float angle;
 static float Iq_ref;
 // control
@@ -203,46 +205,19 @@ struct consigne_struct
     uint8_t id_and_status; // Contains ID [7:6], OVERCURRENT [5], REROLL_COUNTER[1], STATUS [0]
 };
 
-union rs_data
-{
-    uint8_t data_buffer[DMA_BUFFER_SIZE];
-    struct consigne_struct consigne;
-};
-
-union rs_data tx_data;
-union rs_data rx_data;
-
-// Future work : replace union
 struct consigne_struct tx_consigne;
 struct consigne_struct rx_consigne;
 uint8_t *buffer_tx = (uint8_t *)&tx_consigne;
 uint8_t *buffer_rx = (uint8_t *)&rx_consigne;
 
-extern float frequency;
-
 uint8_t status;
 uint32_t counter_time;
 uint8_t decimation = 1;
 uint8_t delay = 0;
-
 three_phase_t Iabc_ref;
-typedef struct Record
-{
-    float32_t angle_cordic;
-    float32_t angle_pll;
-    float32_t V_a;
-    float32_t V_b;
-    float32_t V_c;
-    float32_t I_a;
-    float32_t I_b;
-    float32_t I_c;
-    float32_t w;
-} record_t;
-
-record_t record_array[2048];
-uint32_t counter;
-uint8_t stop_recording;
-
+ScopeMimicry scope(1024, 9);
+static bool is_downloading = false;
+static bool stop_recording = 0;
 float32_t sin_value;
 float32_t cos_value;
 
@@ -283,8 +258,10 @@ enum control_state_mode {
 
 control_state_mode control_state = IDLE;
 serial_interface_menu_mode mode_asked = IDLEMODE;
+uint32_t cumul_receiv_datas = 0;
+uint32_t last_receive_calls = 0;
 uint32_t n_receive_calls = 0;
-bool sync_problem;
+bool sync_problem = 0;
 
 void reception_function(void)
 {
@@ -306,11 +283,30 @@ void reception_function(void)
     if (IS_OVERCCURRENT(rx_consigne.id_and_status)) // check if one phase experienced a current > 8A and shut off everything
         control_state = OVERCURRENT;
     n_receive_calls++;
-
 }
-
+bool scope_trigger(void) {
+    if (stop_recording == 0 && control_state != OVERCURRENT)
+        return false;
+    else 
+        return true; 
+}
+void dump_scope_datas(ScopeMimicry &scope)  {
+    uint8_t *buffer = scope.get_buffer();
+    uint16_t buffer_size = scope.get_buffer_size() >> 2; // we divide by 4 (4 bytes per float data) 
+    printk("begin record\n");
+    printk("#");
+    for (uint16_t k=0;k < scope.get_nb_channel(); k++) {
+        printk("%s,", scope.get_channel_name(k));
+    }
+    printk("\n");
+    printk("# %d\n", scope.get_final_idx());
+    for (uint16_t k=0;k < buffer_size; k++) {
+        printk("%08x\n", *((uint32_t *)buffer + k));
+        task.suspendBackgroundUs(100);
+    }
+    printk("end record\n");
+}
 //--------------SETUP FUNCTIONS-------------------------------
-
 /**
  * This is the setup routine.
  * It is used to call functions that will initialize your spin, twist, data and/or tasks.
@@ -359,13 +355,29 @@ void setup_routine()
     //TODO: make watchdog in each slave (if no data received between two count: disable pwm)
     communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // custom configuration for RS485
 
+    scope.set_trigger(scope_trigger);
+    scope.connectChannel(angle_cordic, "angle_cordic");
+    scope.connectChannel(angle, "angle_pll");
+    scope.connectChannel(V_a, "V_a");
+    scope.connectChannel(V_b, "V_b");
+    scope.connectChannel(V_c, "V_c");
+    scope.connectChannel(Iabc.a, "I_a");
+    scope.connectChannel(Iabc.b, "I_b");
+    scope.connectChannel(Iabc.c, "I_c");
+    scope.connectChannel(w, "w");
+    scope.start();
     /* for park control */
     PidParams pid_p(Ts, Kp, Ti, Td, N, lower_bound, upper_bound);
     // pi for d axis
     pi_d.init(pid_p);
+    pi_d.reset();
     // pi for q axis
     pi_q.init(pid_p);
-    pllAngle.init(Ts, f0, 0.05F);
+    pi_q.reset();
+    if (pllAngle.init(Ts, 400.0, 0.05F) == -EINVAL) {
+        control_state = OVERCURRENT; 
+    }
+    
     pllAngle.reset(0.F);
     Vabc.a = 0.0;
     Vabc.b = 0.0;
@@ -376,105 +388,106 @@ void setup_routine()
     Iabc.b = 0.0;
     Iabc.c = 0.0;
 }
-
 //--------------LOOP FUNCTIONS--------------------------------
-
 void loop_communication_task()
 {
-    while (1)
-    {
         received_serial_char = console_getchar();
         switch (received_serial_char)
-        {
-            case 'h':
-                //----------SERIAL INTERFACE MENU-----------------------
-                printk(" ________________________________________\n");
-                printk("|     ------- MENU ---------             |\n");
-                printk("|     press i : idle mode                |\n");
-                printk("|     press s : serial mode              |\n");
-                printk("|     press p : power mode               |\n");
-                printk("|     press u : duty cycle UP            |\n");
-                printk("|     press d : duty cycle DOWN          |\n");
-                printk("|________________________________________|\n\n");
-                //------------------------------------------------------
-                break;
-            case 'i':
-                mode_asked = IDLEMODE;
-                Iq_ref = 0.0;
-                break;
-            case 'p':
-                mode_asked = POWERMODE;
-                printk("power\n");
-                break;
-            case 'u': 
-                if (Iq_ref < CURRENT_LIMIT)
-                {
-                    Iq_ref += 0.5;
-                    counter = 0;
-                }
-                    
-                break;
-            case 'd':
-                if (Iq_ref > 0.0)
-                    Iq_ref -= 0.5;
-                break;
-            case 'j':
-                if (f0 < 400.0)
-                    f0 += .1;
-                break;
-            case 'k':
-                if (f0 > 0.0)
-                    f0 -= .1;
-                break;
-            case 'r':
-                stop_recording = (stop_recording + 1) & 0x1;
+    {
+        case 'h':
+            //----------SERIAL INTERFACE MENU-----------------------
+            printk(" ________________________________________\n");
+            printk("|     ------- MENU ---------             |\n");
+            printk("|     press i : idle mode                |\n");
+            printk("|     press p : power mode               |\n");
+            printk("|     press u : Iqref UP                 |\n");
+            printk("|     press d : Iqref DOWN               |\n");
+            printk("|     press j : f0    UP                 |\n");
+            printk("|     press k : f0    DOWN               |\n");
+            printk("|     press r : toggle recording         |\n");
+            printk("|     press s : dump datas recorded      |\n");
+            printk("|________________________________________|\n\n");
+            //------------------------------------------------------
             break;
-            default:
-                break;
-        }
+        case 'i':
+            mode_asked = IDLEMODE;
+            cumul_receiv_datas = 0;
+            Iq_ref = 0.0;
+            break;
+        case 'p':
+            mode_asked = POWERMODE;
+            printk("power\n");
+            break;
+        case 'u': 
+            if (Iq_ref < CURRENT_LIMIT)
+            {
+                Iq_ref += 0.5;
+            }
+            break;
+        case 'd':
+            if (Iq_ref > 0.0)
+                Iq_ref -= 0.5;
+            break;
+        case 'j':
+            if (f0_ref < 400.0)
+                f0_ref += .1;
+            break;
+        case 'k':
+            if (f0_ref > 0.0)
+                f0_ref -= .1;
+            break;
+        case 'r':
+            stop_recording = (stop_recording + 1) & 0x1;
+            if (stop_recording == 0) {
+                scope.start();
+            }
+            break;
+        case 's':
+            is_downloading = true;
+        default:
+            break;
     }
 }
-
 /**
  * This is the code loop of the background task
  * It is executed second as defined by it suspend task in its last line.
  * You can use it to execute slow code such as state-machines.
  */
+char status_icon[2][4] = {
+    {0xF0, 0x9F, 0x91, 0x8C},
+    {0xF0, 0x9F, 0x92, 0xA9}};
+
 void loop_application_task()
 {
-    if (control_state == IDLE)
-    {
-        printk("%i:%i:%i", control_state, n_receive_calls, stop_recording);
-        spin.led.turnOff();
-    }
-    else if (control_state == POWER)
+    int id = sync_problem; 
+    printk("%i:", control_state);
+    printk("%.2f:", Iq_ref);
+    printk("%.2f:", f0_ref);
+    printk("%d:", sync_problem);
+    printk("%d:", cumul_receiv_datas);
+    printk("%d:", last_receive_calls);
+    printk("%c%c%c%c:", 
+           status_icon[id][0],
+           status_icon[id][1],
+           status_icon[id][2],
+           status_icon[id][3]);
+    if (stop_recording) 
+        printk("\n");
+    else 
+        printk("REC\n");
+    if (control_state == POWER)
     {
         spin.led.turnOn();
-        printk("%i:", control_state);
-        printk("%.2f:", Iq_ref);
-        printk("%.2f:", f0);
-        printk("%.2f:", Vdq_module);
-        printk("%.2f:", Idq_module);
-    }
-    else if (control_state == OVERCURRENT)
-    {
+    } else {
         spin.led.turnOff();
-        printk("OVERCCURENT \n");
-        printk("%i:", control_state);
-        printk("%.0f:", sin_value);
-        printk("%.0f:", cos_value);
-        printk("%i:", sync_problem);
-        printk("%f:", Iq_ref);
     }
-    if (counter != 0) 
-        printk("!!!!\n");
-    else 
-        printk("\n");
-
+    if (is_downloading && control_state != POWER) {
+        dump_scope_datas(scope);
+        is_downloading = 0;
+    }
     // Pause between two runs of the task
     task.suspendBackgroundMs(200);
 }
-
 /**
  * This is the code loop of the critical task
  * It is executed every 500 micro-seconds defined in the setup_software function.
@@ -486,6 +499,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     uint8_t data_validity;
     float value;
     counter_time++;
+    
     value = data.getLatest(ANALOG_SIN, &data_validity);
     if (data_validity == DATA_IS_OK)
     {
@@ -496,18 +510,20 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     {
         cos_value = SINCOS_AMP * (value - SINCOS_OFFSET);
     }
-    // ANGLE ACQUISITION
+    // ANGLE ACQUISITION, ANGLE CLOSE LOOP
     cos_theta = (int32_t) (cos_value * 2147483648.0);
     sin_theta = (int32_t) (sin_value * 2147483648.0);
     LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
     LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
-    angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of x+iy
-    w0 = 2.0F * PI * f0;
-    //angle += w0 * control_task_period * 1.0e-6F;
-    //angle = ot_modulo_2pi(angle);
+    // angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of x+iy
+    w0 = 2.0F * PI * f0_ref;
+    // ANGLE OPEN LOOP
+    angle_cordic += w0 * control_task_period * 1.0e-6F;
+    angle_cordic  = ot_modulo_2pi(angle);
+    
     pll_datas = pllAngle.calculateWithReturn(angle_cordic);
     angle = ot_modulo_2pi((4.0 * (PI - pll_datas.angle)));
-    
+    w = pll_datas.w;
 
     switch (control_state)
     {
@@ -541,18 +557,15 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
     if (control_state == IDLE || control_state == OVERCURRENT)
     {
-        pi_d.reset(0.0);
-        pi_q.reset(0.0);
+        pi_d.reset(0.0F);
+        pi_q.reset(0.0F);
+        pllAngle.reset(0.0F);
         SET_STATUS_IDLE(tx_consigne.id_and_status);
         SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
         if (stop_recording == 1)
            RESET_COUNTER(tx_consigne.id_and_status); 
         else
            KEEP_COUNT(tx_consigne.id_and_status);
-
-        if (counter_time > 1000) {
-            communication.rs485.startTransmission();
-        }
         pwm_enable = false;
     }
     else if (control_state == STARTUP) {
@@ -617,34 +630,17 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
         SET_STATUS_POWER(tx_consigne.id_and_status);
         SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
-        if ((n_receive_calls != 3) && (counter > 2))
-            sync_problem = 1; 
-
-        n_receive_calls = 0; 
+    }
+    // scope.acquire();
+    if (counter_time > 1000) { // Wait to be sure that other cards are power on.
+        cumul_receiv_datas += n_receive_calls;
+        last_receive_calls = n_receive_calls;
+        //if ((n_receive_calls != 3))
+        //    sync_problem = 1; 
+        n_receive_calls = 0;
         communication.rs485.startTransmission();
     }
-    if (counter_time % decimation == 0)
-    {
-        record_array[counter].angle_cordic = angle_cordic;
-        record_array[counter].angle_pll = pll_datas.angle;
-        record_array[counter].V_a = Vabc.a;
-        record_array[counter].V_b = Vabc.b;
-        record_array[counter].V_c = Vabc.c;
-        record_array[counter].I_a = Iabc.a;
-        record_array[counter].I_b = Iabc.b;
-        record_array[counter].I_c = n_receive_calls;
-        record_array[counter].w = pll_datas.w;
-        if (stop_recording == 0 && control_state != OVERCURRENT)
-        {
-            counter = (counter + 1) & 0x7FF;
-        } else {
-            counter = 0;
-        }
-    }
-
-
 }
-
 /**
  * This is the main function of this example
  * This function is generic and does not need editing.
