@@ -64,6 +64,7 @@ uint32_t n_receive_calls = 0;
 uint8_t stop_recording = 0;
 #define CURRENT_LIMIT 9.0
 #define VOLTAGE_SCALE 50.0
+#define RECEIVE_MODULO 30000
 // retrieve identifiant
 #define GET_ID(id_and_status) ((id_and_status >> 6) & 0x3)  
 #define SET_ID(id_and_status, value) { \
@@ -261,7 +262,7 @@ void reception_slave_A(void)
         else 
             stop_recording = 0;
     }
-    n_receive_calls = (n_receive_calls + 1) % 5000;
+    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
 }
 
 void reception_slave_B() {
@@ -291,7 +292,7 @@ void reception_slave_B() {
         else 
             stop_recording = 0;
     }
-    n_receive_calls = (n_receive_calls + 1)%5000;
+    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
 }
 
 void reception_slave_C() {
@@ -321,7 +322,7 @@ void reception_slave_C() {
         else 
             stop_recording = 0;
     }
-    n_receive_calls = (n_receive_calls + 1)%5000;
+    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
 }
 
 //--------------SETUP FUNCTIONS-------------------------------
@@ -383,10 +384,12 @@ void setup_routine()
  */
 void loop_application_task()
 {
-    printk("%c: %s: %i: %f: %f\n", TXT_ID[SPIN_MODE], state_msg[control_state], stop_recording, var_Vref, var_I1);
+    //printk("%c: %s: %i: %f: %f\n", TXT_ID[SPIN_MODE], state_msg[control_state], stop_recording, var_Vref, var_I1);
     if (counter != 0) printk("!!!");
-    if (n_receive_calls > 2500) {
-        spin.led.toggle();
+    if (n_receive_calls > (RECEIVE_MODULO>>1)) {
+        spin.led.turnOn();
+    } else {
+        spin.led.turnOff();
     }
 
     // Pause between two runs of the task
