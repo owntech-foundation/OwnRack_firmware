@@ -51,9 +51,14 @@
 #define DMA_BUFFER_SIZE 10 // 3 byte for Va/Vb, 3 byte for Vc/(Ia/Ic), 3 byte for Ib and w, and 1 byte for identifiant
 
 uint8_t SPIN_MODE = 0;
-#define SLAVE_A 0x3A004D 
-#define SLAVE_B 0x58002F 
-#define SLAVE_C 0x400040 
+                    
+#define UID_SLAVE_A 0x3A004D 
+#define UID_SLAVE_B 0x58002F 
+#define UID_SLAVE_C 0x400040 
+
+#define SLAVE_A 1
+#define SLAVE_B 2
+#define SLAVE_C 3
 
 #define RS_ID_MASTER 0 
 #define RS_ID_SLAVE_A 1 
@@ -76,7 +81,7 @@ uint8_t stop_recording = 0;
 #define SET_OVERCURRENT(id_and_status) (id_and_status |= 0x20)
 // get bit 5
 #define IS_OVERCCURRENT(id_and_status) ((id_and_status >> 5) & 1) // check current for safety
-#define GET_STATUS(id_and_status) (id_and_status & 1)             // check the status (IDLE or POWER )
+#define GET_STATUS(id_and_status) (id_and_status & 1)             // check the master_status (IDLE or POWER )
 #define REROLL_COUNTER(id_and_status) ((id_and_status >> 1) & 1)  // reroll counter to monitor the intern variables
 
 #define GET_UPPER_12BITS(buf_3bytes) ((int16_t) ((*(buf_3bytes + 2) << 4) | (*(buf_3bytes + 1) >> 4)))
@@ -170,28 +175,16 @@ struct consigne_struct
 {
     uint8_t buf_Vab[3];    // Contains Va and Vb reference
     uint8_t buf_VcIac[3];  // Contains Vc reference and IA OR IC measure
-    uint8_t buf_IbW[3];    // Contains Ib and frequency reference    //
-    uint8_t id_and_status; // Contains status
+    uint8_t buf_IbW[3];    // Contains Ib and pulsation reference    //
+    uint8_t id_and_status; // Contains master_status
 };
 
-union rs_data
-{
-    uint8_t data_buffer[DMA_BUFFER_SIZE];
-    struct consigne_struct consigne;
-};
-
-union rs_data tx_data;
-union rs_data rx_data;
-
-// Future work : replace union
 struct consigne_struct tx_consigne;
 struct consigne_struct rx_consigne;
 uint8_t *buffer_tx = (uint8_t *)&tx_consigne;
 uint8_t *buffer_rx = (uint8_t *)&rx_consigne;
 
-extern float frequency;
-
-uint8_t status;
+uint8_t master_status;
 uint32_t counter_time = 0;
 
 three_phase_t Iabc_ref;
@@ -222,7 +215,6 @@ enum control_state_mode //
 };
 enum control_state_mode control_state = IDLE;
 const char *state_msg[] = {"IDLE", "POWER", "OVERCURRENT", NULL};
-float32_t n_receive_calls_slave_a = 0;
 
 timing_t time_toc;
 timing_t time_tic;
@@ -234,93 +226,38 @@ uint32_t spin_mode(void) {
 }
 
 // TODO: make more generic reception function
-void reception_slave_A(void)
+void reception_function(void)
 {
     uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
-    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
-    if (rs_id == RS_ID_MASTER &&  rs_status == POWER)
-    {
-        /*reception of data*/
-        status = rs_status;
-        Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_Vab), VOLTAGE_SCALE); 
-        w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0, 0.0);
-        tx_consigne = rx_consigne;
-        SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_A);
-        PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
-        if (control_state == OVERCURRENT)
-            SET_OVERCURRENT(tx_consigne.id_and_status);
-        n_receive_calls_slave_a++;
-        communication.rs485.startTransmission();
-    }
-    else if (rs_id == RS_ID_MASTER && rs_status == IDLE)
-    {
-        status = rs_status;
-    }
-    if (rs_id == RS_ID_MASTER) {
-        if (REROLL_COUNTER(rx_consigne.id_and_status)) 
-            stop_recording = 1;//counter = 0;
-        else 
-            stop_recording = 0;
-    }
-    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
-}
+    tx_consigne = rx_consigne;
+    switch (rs_id) 
+    { 
+        case (RS_ID_MASTER):
+            /*reception of data*/
+            PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
+            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_A);
+            if (control_state == OVERCURRENT)
+                SET_OVERCURRENT(tx_consigne.id_and_status);
+            communication.rs485.startTransmission();
+            break;  
 
-void reception_slave_B() {
-    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
-    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
-    if (rs_id == RS_ID_SLAVE_A && rs_status == POWER)
-    {
-        status = rs_status;
-        Vref = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_Vab), VOLTAGE_SCALE);
-        w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0);
-        tx_consigne = rx_consigne;
-        PUT_LOWER_12BITS(tx_consigne.buf_IbW, to_12bits(I1_low_value, 40.0, 20.0));
-        SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_B);
+        case (RS_ID_SLAVE_A ):
+            PUT_LOWER_12BITS(tx_consigne.buf_IbW, to_12bits(I1_low_value, 40.0, 20.0));
+            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_B);
+            if (control_state == OVERCURRENT)
+                SET_OVERCURRENT(tx_consigne.id_and_status);
+            communication.rs485.startTransmission();
+            break;
 
-        if (control_state == OVERCURRENT)
-            SET_OVERCURRENT(tx_consigne.id_and_status);
-
-        communication.rs485.startTransmission();
-    }
-    else if (rs_id == RS_ID_MASTER && rs_status == IDLE)
-    {
-        status = rs_status;
-    }
-    if (rs_id == RS_ID_MASTER) {
-        if (REROLL_COUNTER(rx_consigne.id_and_status)) 
-            stop_recording = 1;//counter = 0;
-        else 
-            stop_recording = 0;
-    }
-    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
-}
-
-void reception_slave_C() {
-    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
-    uint8_t rs_status = GET_STATUS(rx_consigne.id_and_status);
-    if (rs_id == RS_ID_SLAVE_B && rs_status == POWER)
-    {
-        status = rs_status;
-        Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_VcIac), VOLTAGE_SCALE);
-        w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0);
-        tx_consigne = rx_consigne;
-        PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
-        SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
-
-        if (control_state == OVERCURRENT)
-            SET_OVERCURRENT(tx_consigne.id_and_status);            
-
-        communication.rs485.startTransmission();
-    }
-    else if (rs_id == RS_ID_MASTER && rs_status == IDLE)
-    {
-        status = rs_status;
-    }
-    if (rs_id == RS_ID_MASTER) {
-        if (REROLL_COUNTER(rx_consigne.id_and_status)) 
-            stop_recording = 1;//counter = 0;
-        else 
-            stop_recording = 0;
+        case (RS_ID_SLAVE_B):
+            PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
+            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
+            if (control_state == OVERCURRENT)
+                SET_OVERCURRENT(tx_consigne.id_and_status);
+            communication.rs485.startTransmission();
+            break;
+        default:
+            break;
     }
     n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
 }
@@ -347,26 +284,23 @@ void setup_routine()
     //------ software init -----
     data.enableTwistDefaultChannels();
     switch (spin_mode()) {
-        case SLAVE_A:
+        case UID_SLAVE_A:
             data.setParameters(I1_LOW, 4.56, -9367.00);
             data.setParameters(I2_LOW, 5.51, -11351.00);
-            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_A, SPEED_20M); // RS485 at 20Mbits/s
-            SPIN_MODE = 1;
+            SPIN_MODE = SLAVE_A;
         break;
-        case SLAVE_B:
+        case UID_SLAVE_B:
             data.setParameters(I1_LOW, 4.679, -9551.00);
             data.setParameters(I2_LOW, 4.523, -9281.00);
-            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_B, SPEED_20M); // RS485 at 20Mbits/s
-            SPIN_MODE = 2;
+            SPIN_MODE = SLAVE_B;
         break;
-        case SLAVE_C:
+        case UID_SLAVE_C:
             data.setParameters(I1_LOW, 5.406, -11426.00);
             data.setParameters(I2_LOW, 5.31, -10747.00);
-            communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_slave_C, SPEED_20M); // RS485 at 20Mbits/s
-            SPIN_MODE = 3;
+            SPIN_MODE = SLAVE_C;
         break;
     }
-
+    communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // RS485 at 20Mbits/s
     AppTask_num = task.createBackground(loop_application_task);
     task.startBackground(AppTask_num);
     task.createCritical(&loop_control_task, control_task_period);
@@ -384,14 +318,13 @@ void setup_routine()
  */
 void loop_application_task()
 {
-    //printk("%c: %s: %i: %f: %f\n", TXT_ID[SPIN_MODE], state_msg[control_state], stop_recording, var_Vref, var_I1);
-    if (counter != 0) printk("!!!");
+    // printk("%c: %s: %8.2f: %d\n", TXT_ID[SPIN_MODE], state_msg[control_state], (float32_t) total_ns*0.001, master_status);
+    // if (counter != 0) printk("!!!");
     if (n_receive_calls > (RECEIVE_MODULO>>1)) {
         spin.led.turnOn();
     } else {
         spin.led.turnOff();
     }
-
     // Pause between two runs of the task
     task.suspendBackgroundMs(100);
 }
@@ -406,7 +339,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 {
     time_tic = timing_counter_get();
     counter_time++;
-//------- MEASURES -------------------------------------------------------------
+    //--- MEASURES -------------------------------------------------------------
     meas_data = data.getLatest(I1_LOW);
     if (meas_data != NO_VALUE)
         I1_low_value = meas_data / 1000.0;
@@ -418,8 +351,8 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     meas_data = data.getLatest(I2_LOW);
     if (meas_data != NO_VALUE)
         I2_low_value = meas_data / 1000.0;
-    
-    if (spin_mode() == SLAVE_A) { // FIXME: to remember why we make that ???
+
+    if (SPIN_MODE == SLAVE_A) { // FIXME: to remember why we make that ???
         if(I2_low_value >= CURRENT_LIMIT)
             I2_low_value = CURRENT_LIMIT - 0.1;
         else if (I2_low_value <= -CURRENT_LIMIT)
@@ -429,20 +362,37 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     meas_data = data.getLatest(V_HIGH);
     if (meas_data != NO_VALUE)
         V_high = meas_data;
-    
-    vHigh_filtered = vHigh_filter.calculateWithReturn(V_high);
 
-//------- STATE CALCULATION ----------------------------------------------------
+    vHigh_filtered = vHigh_filter.calculateWithReturn(V_high);
+    //--- GET DATA FROM RS485 --------------------------------------------------
+    master_status = GET_STATUS(rx_consigne.id_and_status);
+    switch (SPIN_MODE) {
+        case SLAVE_A:
+            Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_Vab), VOLTAGE_SCALE); 
+            break;
+        case SLAVE_B:
+            Vref = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_Vab), VOLTAGE_SCALE);
+            break;
+        case SLAVE_C:
+            Vref = from_12bits(GET_LOWER_12BITS(rx_consigne.buf_VcIac), VOLTAGE_SCALE);
+            break;
+    }
+    w0 = from_12bits(GET_UPPER_12BITS(rx_consigne.buf_IbW), 500.0, 0.0);
+    if (REROLL_COUNTER(rx_consigne.id_and_status)) 
+        stop_recording = 1;//counter = 0;
+    else 
+        stop_recording = 0;
+    //--- STATE CALCULATION ----------------------------------------------------
     if (  ((I1_low_value > CURRENT_LIMIT)
         || (I2_low_value > CURRENT_LIMIT) 
         || (I1_low_value < -CURRENT_LIMIT)
         || (I2_low_value < -CURRENT_LIMIT)) && counter_time > 10)
         control_state = OVERCURRENT;
-    
+
     switch (control_state) 
     {
         case IDLE:
-            if (status == POWER) 
+            if (master_status == POWER) 
             {
                 twist.startLeg(LEG1);
                 twist.startLeg(LEG2);
@@ -450,20 +400,19 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
             }
             break;
         case POWER:
-            if (status == IDLE)
+            if (master_status == IDLE) {
                 control_state = IDLE;
+            }
             break;
         case OVERCURRENT:
             // we stay in overcurrent mode
-            // if (status == IDLE)
+            // if (master_status == IDLE)
             //     control_state = IDLE;
             break;
         default:
             control_state = IDLE;
-    }
-
-//------- CONTROL --------------------------------------------------------------
-
+    } 
+    //--- CONTROL --------------------------------------------------------------
     if (control_state == POWER)
     {
         duty_cycle_leg1 = 1.0 / VOLTAGE_SCALE * Vref;
@@ -489,11 +438,13 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
         twist.stopLeg(LEG2);
         Vref = 0.0;
     }
-
-//------- RECORRDING -----------------------------------------------------------
+    
+    //------- RECORRDING -----------------------------------------------------------
     time_toc = timing_counter_get();
     total_cycles = timing_cycles_get(&time_tic, &time_toc);
     total_ns = timing_cycles_to_ns(total_cycles); 
+
+
     if ((counter_time % 1 == 0))
     {
         record_array[counter].I1_low = I1_low_value;
