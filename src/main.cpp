@@ -52,9 +52,9 @@
 
 uint8_t SPIN_MODE = 0;
                     
-#define UID_SLAVE_A 0x3A004D 
-#define UID_SLAVE_B 0x58002F 
-#define UID_SLAVE_C 0x400040 
+#define UID_SLAVE_A 0x3A004D
+#define UID_SLAVE_B 0x58002F
+#define UID_SLAVE_C 0x400040
 
 #define SLAVE_A 1
 #define SLAVE_B 2
@@ -121,7 +121,9 @@ void loop_control_task();       // code to be executed in real-time at 20kHz
 void loop_application_task();   // code to be executed in the fast application task
 int8_t AppTask_num;             // Application Task number
 
-
+//
+uint32_t led_refresh_sampling = 6*10000;
+uint32_t application_task_counter;
 //------------- PR RESONANT -------------------------------------
 float32_t w0;
 static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
@@ -186,23 +188,10 @@ uint8_t *buffer_rx = (uint8_t *)&rx_consigne;
 
 uint8_t master_status;
 uint32_t counter_time = 0;
+uint32_t counter_led = 0;
 
 three_phase_t Iabc_ref;
 float32_t comp_dt = 0.010;
-typedef struct Record
-{
-    float32_t I1_low;
-    float32_t V_low;
-    float32_t Vhigh_value;
-    float32_t I2_low;
-    float32_t I_com;
-    float32_t duty_cycle;
-    float32_t Vref;
-    float32_t n_receive_calls;
-    float32_t w;
-} record_t;
-
-record_t record_array[2048];
 uint32_t counter;
 
 //---------------------------------------------------------------
@@ -225,41 +214,51 @@ uint32_t spin_mode(void) {
     return *uid_0;
 }
 
-// TODO: make more generic reception function
+static uint8_t rs_id;
 void reception_function(void)
 {
-    uint8_t rs_id = GET_ID(rx_consigne.id_and_status);
+    spin.gpio.setPin(PC13);
+    rs_id = GET_ID(rx_consigne.id_and_status);
     tx_consigne = rx_consigne;
-    switch (rs_id) 
+    switch (SPIN_MODE) 
     { 
-        case (RS_ID_MASTER):
+        case (SLAVE_A):
             /*reception of data*/
-            PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
-            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_A);
-            if (control_state == OVERCURRENT)
-                SET_OVERCURRENT(tx_consigne.id_and_status);
-            communication.rs485.startTransmission();
+            if (rs_id == RS_ID_MASTER) {
+                PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
+                SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_A);
+                if (control_state == OVERCURRENT)
+                    SET_OVERCURRENT(tx_consigne.id_and_status);
+                communication.rs485.startTransmission();
+                n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
+            }
             break;  
-
-        case (RS_ID_SLAVE_A ):
-            PUT_LOWER_12BITS(tx_consigne.buf_IbW, to_12bits(I1_low_value, 40.0, 20.0));
-            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_B);
-            if (control_state == OVERCURRENT)
-                SET_OVERCURRENT(tx_consigne.id_and_status);
-            communication.rs485.startTransmission();
+        case (SLAVE_B):
+            if (rs_id == RS_ID_SLAVE_A) 
+            {
+                PUT_LOWER_12BITS(tx_consigne.buf_IbW, to_12bits(I1_low_value, 40.0, 20.0));
+                SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_B);
+                if (control_state == OVERCURRENT)
+                    SET_OVERCURRENT(tx_consigne.id_and_status);
+                communication.rs485.startTransmission();
+                n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
+            }
             break;
-
-        case (RS_ID_SLAVE_B):
-            PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
-            SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
-            if (control_state == OVERCURRENT)
-                SET_OVERCURRENT(tx_consigne.id_and_status);
-            communication.rs485.startTransmission();
+        case (SLAVE_C):
+            if (rs_id == RS_ID_SLAVE_B)
+            {
+                PUT_UPPER_12BITS(tx_consigne.buf_VcIac, to_12bits(I1_low_value, 40.0, 20.0));
+                SET_ID(tx_consigne.id_and_status, RS_ID_SLAVE_C);
+                if (control_state == OVERCURRENT)
+                    SET_OVERCURRENT(tx_consigne.id_and_status);
+                communication.rs485.startTransmission();
+                n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
+            }
             break;
         default:
             break;
     }
-    n_receive_calls = (n_receive_calls + 1) % RECEIVE_MODULO;
+    spin.gpio.resetPin(PC13);
 }
 
 //--------------SETUP FUNCTIONS-------------------------------
@@ -277,10 +276,11 @@ void setup_routine()
 
     twist.setVersion(shield_TWIST_V1_2);
     twist.initAllBuck(); // initialize in buck mode leg1 and leg2
-    communication.sync.initSlave(TWIST_v_1_1_4);
+    communication.sync.initSlave(TWIST_v_1_1_2);
     timing_init();
     timing_start();
-
+    spin.gpio.configurePin(PC12, OUTPUT);
+    spin.gpio.configurePin(PC13, OUTPUT);
     //------ software init -----
     data.enableTwistDefaultChannels();
     switch (spin_mode()) {
@@ -300,6 +300,7 @@ void setup_routine()
             SPIN_MODE = SLAVE_C;
         break;
     }
+	rx_consigne.id_and_status = 0;
     communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct), reception_function, SPEED_20M); // RS485 at 20Mbits/s
     AppTask_num = task.createBackground(loop_application_task);
     task.startBackground(AppTask_num);
@@ -318,13 +319,8 @@ void setup_routine()
  */
 void loop_application_task()
 {
-    // printk("%c: %s: %8.2f: %d\n", TXT_ID[SPIN_MODE], state_msg[control_state], (float32_t) total_ns*0.001, master_status);
+    printk("%c: %s: %8.2f: %d\n", TXT_ID[SPIN_MODE], state_msg[control_state], (float32_t) total_ns*0.001, master_status);
     // if (counter != 0) printk("!!!");
-    if (n_receive_calls > (RECEIVE_MODULO>>1)) {
-        spin.led.turnOn();
-    } else {
-        spin.led.turnOff();
-    }
     // Pause between two runs of the task
     task.suspendBackgroundMs(100);
 }
@@ -337,8 +333,10 @@ void loop_application_task()
  */
 __attribute__((section(".ramfunc"))) void loop_control_task()
 {
+	spin.gpio.setPin(PC12);
     time_tic = timing_counter_get();
     counter_time++;
+	counter_led= (counter_led + 1) % led_refresh_sampling;
     //--- MEASURES -------------------------------------------------------------
     meas_data = data.getLatest(I1_LOW);
     if (meas_data != NO_VALUE)
@@ -351,13 +349,6 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     meas_data = data.getLatest(I2_LOW);
     if (meas_data != NO_VALUE)
         I2_low_value = meas_data / 1000.0;
-
-    if (SPIN_MODE == SLAVE_A) { // FIXME: to remember why we make that ???
-        if(I2_low_value >= CURRENT_LIMIT)
-            I2_low_value = CURRENT_LIMIT - 0.1;
-        else if (I2_low_value <= -CURRENT_LIMIT)
-            I2_low_value = -CURRENT_LIMIT + 0.1;
-    }
 
     meas_data = data.getLatest(V_HIGH);
     if (meas_data != NO_VALUE)
@@ -383,28 +374,31 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
     else 
         stop_recording = 0;
     //--- STATE CALCULATION ----------------------------------------------------
-    if (  ((I1_low_value > CURRENT_LIMIT)
-        || (I2_low_value > CURRENT_LIMIT) 
-        || (I1_low_value < -CURRENT_LIMIT)
-        || (I2_low_value < -CURRENT_LIMIT)) && counter_time > 10)
-        control_state = OVERCURRENT;
+    // if (  ((I1_low_value > CURRENT_LIMIT)
+    //     || (I2_low_value > CURRENT_LIMIT) 
+    //     || (I1_low_value < -CURRENT_LIMIT)
+    //     || (I2_low_value < -CURRENT_LIMIT)) && counter_time > 10)
+    //     control_state = OVERCURRENT;
 
-    switch (control_state) 
+    switch (control_state)
     {
         case IDLE:
-            if (master_status == POWER) 
-            {
-                twist.startLeg(LEG1);
-                twist.startLeg(LEG2);
-                control_state = POWER;
-            }
-            break;
+			led_refresh_sampling = 6*10000; // 60*100ms
+			if (master_status == POWER)
+			{
+				// twist.startLeg(LEG1);
+				// twist.startLeg(LEG2);
+				control_state = POWER;
+			}
+			break;
         case POWER:
+			led_refresh_sampling = 3*10000; // 20*100ms
             if (master_status == IDLE) {
                 control_state = IDLE;
             }
             break;
         case OVERCURRENT:
+			led_refresh_sampling = (int)0.5*10000; // 4*100ms
             // we stay in overcurrent mode
             // if (master_status == IDLE)
             //     control_state = IDLE;
@@ -438,31 +432,17 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
         twist.stopLeg(LEG2);
         Vref = 0.0;
     }
-    
-    //------- RECORRDING -----------------------------------------------------------
-    time_toc = timing_counter_get();
-    total_cycles = timing_cycles_get(&time_tic, &time_toc);
-    total_ns = timing_cycles_to_ns(total_cycles); 
 
+	if (counter_led > (led_refresh_sampling >> 1) ) {
+		spin.led.turnOn();
+	} else {
+		spin.led.turnOff();
+	}
+	time_toc = timing_counter_get();
+	total_cycles = timing_cycles_get(&time_tic, &time_toc);
+	total_ns = timing_cycles_to_ns(total_cycles); 
+	spin.gpio.resetPin(PC12);
 
-    if ((counter_time % 1 == 0))
-    {
-        record_array[counter].I1_low = I1_low_value;
-        record_array[counter].V_low = V1_low_value;
-        record_array[counter].Vhigh_value = vHigh_filtered;
-        record_array[counter].duty_cycle = (float32_t) (total_ns*0.001);
-        record_array[counter].I2_low = I2_low_value;
-        record_array[counter].Vref = Vref;
-        record_array[counter].n_receive_calls = n_receive_calls;
-        record_array[counter].w = w0;
-
-        if (stop_recording == 0 && control_state != OVERCURRENT)
-        {
-            counter = (counter + 1) & 0x7FF;
-        } else {
-            counter = 0;
-        }
-    }
 }
 
 /**
