@@ -33,29 +33,18 @@
 #include "TwistAPI.h"
 #include "SpinAPI.h"
 #include "CommunicationAPI.h"
-
 //----------- USER INCLUDE ----------------------
 #include "pid.h"
-#include "stm32g4xx.h"
-#include "core_cm4.h"
-#include "stm32g4xx_ll_dma.h"
 #include "transform.h"
 #include "filters.h"
 #include "ScopeMimicry.h"
-
 //------------ZEPHYR DRIVERS----------------------
-#include "zephyr/kernel.h"
 #include "zephyr/console/console.h"
 #include <zephyr/timing/timing.h>
-
 //---------- LL drivers --------------------------
-#include "stm32_ll_gpio.h"
-#include "stm32_ll_lpuart.h"
 #include "stm32g4xx_ll_cordic.h"
-#include <stm32_ll_dma.h>
 
 #define DATACOUNT 8 // 8 - 1 : Can send 7 bytes of data
-
 #define DMA_BUFFER_SIZE                                                                            \
 	10 // 3 byte for Va/Vb, 3 byte for Vc/(Ia/Ic), 3 byte for Ib and w, and 1 byte for
 	   // identifiant
@@ -63,9 +52,9 @@
 #define RS_ID_SLAVE_A 1
 #define RS_ID_SLAVE_B 2
 #define RS_ID_SLAVE_C 3
-#define CURRENT_LIMIT 9.0
-#define VOLTAGE_SCALE 50.0
-
+#define CURRENT_LIMIT 9.0F
+#define VOLTAGE_SCALE 50.0F
+// TODO: bitfield structure ?
 #define GET_ID(id_and_status) ((id_and_status >> 6) & 0x3) // retrieve identifier
 #define SET_ID(id_and_status, value)                                                               \
 	{                                                                                          \
@@ -127,17 +116,13 @@ float32_t ot_sqrt(float32_t in)
 	return out;
 }
 
-PllDatas pll_datas;
-static float32_t w;
 
 timing_t time_toc;
 timing_t time_tic;
 uint64_t total_cycles;
 uint64_t total_ns;
-
 //--------------SETUP FUNCTIONS DECLARATION-------------------
 void setup_routine(); // Setups the hardware and software of the system
-
 //-------------LOOP FUNCTIONS DECLARATION----------------------
 void loop_communication_task(); // code to be executed in the slow communication task
 int8_t CommTask_num;            // Communication Task number
@@ -146,8 +131,6 @@ int8_t AppTask_num;             // Application Task number
 void loop_control_task();       // code to be executed in real-time at 20kHz
 
 static uint32_t control_task_period = 100; //[us] period of the control task
-static bool pwm_enable = false;            //[bool] state of the PWM (ctrl task)
-
 static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
 // --- SIN-COS SCALING ------------------------------------------
 // en haute impedance.
@@ -160,7 +143,7 @@ float32_t angle_cordic;
 
 //--------------FOR PARK CONTROL --------------------------------
 /* Sinewave settings */
-static float f0_ref = 0;
+static float f0_ref = 0.0F;
 static float angle;
 static float Iq_ref;
 // control
@@ -174,6 +157,8 @@ static float32_t Idq_module;
 static Transform transform;
 static Pid pi_d;
 static Pid pi_q;
+PllDatas pll_datas;
+static float32_t w;
 static PllAngle pllAngle;
 static const float32_t Ts = control_task_period * 1.0e-6F;
 static const float32_t Kp = 0.035F;
@@ -183,6 +168,7 @@ static const float32_t N = 1.0F;
 static const float32_t lower_bound = -60.0F;
 static const float32_t upper_bound = 60.0F;
 
+/* assume the DC Bus is 48V (~50V) */
 static float32_t Voffset = 25.0;
 static float32_t startup_time;
 const static float32_t startup_end_time = 1000.0;
@@ -190,27 +176,15 @@ const static float32_t startup_end_time = 1000.0;
 static float32_t I1_low_value_from_slave_a;
 static float32_t I1_low_value_from_slave_b;
 static float32_t I1_low_value_from_slave_c;
-
-//------------- PR RESONANT -------------------------------------
-float32_t w0;
-
+// for open loop test
+float32_t w0_ref;
 //--------------USER VARIABLES DECLARATIONS----------------------
-
 uint8_t received_serial_char;
 
 /* duty_cycle*/
 float32_t duty_cycle;
 float32_t duty_cycle_leg1 = 0.2;
 float32_t duty_cycle_leg2 = 0.2;
-float32_t duty_cycle_leg1_mem = 0.2;
-float32_t duty_cycle_leg2_mem = 0.2;
-
-float32_t V_a;
-float32_t V_b;
-float32_t V_c;
-float32_t Vdc;
-
-uint16_t count_delay;
 
 // TODO: test structure bit field for id_and_status ?
 struct consigne_struct {
@@ -225,43 +199,13 @@ struct consigne_struct rx_consigne;
 uint8_t *buffer_tx = (uint8_t *)&tx_consigne;
 uint8_t *buffer_rx = (uint8_t *)&rx_consigne;
 
-uint8_t status;
 uint32_t counter_time;
-uint8_t decimation = 1;
-uint8_t delay = 0;
 three_phase_t Iabc_ref;
-ScopeMimicry scope(1024, 9);
+ScopeMimicry scope(512, 9);
 static bool is_downloading = false;
 static bool stop_recording = 0;
 float32_t sin_value;
 float32_t cos_value;
-
-void get_angle_and_pulsation() {
-	uint8_t data_validity;
-	float32_t value;
-	value = data.getLatest(ANALOG_SIN, &data_validity);
-	if (data_validity == DATA_IS_OK) {
-		sin_value = SINCOS_AMP * (value - SINCOS_OFFSET);
-	}
-	value = data.getLatest(ANALOG_COS, &data_validity);
-	if (data_validity == DATA_IS_OK) {
-		cos_value = SINCOS_AMP * (value - SINCOS_OFFSET);
-	}
-	// ANGLE ACQUISITION, ANGLE CLOSE LOOP
-	cos_theta = (int32_t)(cos_value * 2147483648.0);
-	sin_theta = (int32_t)(sin_value * 2147483648.0);
-	LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
-	LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
-	// angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of
-	// x+iy
-	w0 = 2.0F * PI * f0_ref;
-	// ANGLE OPEN LOOP
-	angle_cordic += w0 * control_task_period * 1.0e-6F;
-	angle_cordic = ot_modulo_2pi(angle);
-	pll_datas = pllAngle.calculateWithReturn(angle_cordic);
-	angle = ot_modulo_2pi((4.0 * (PI - pll_datas.angle)));
-	w = pll_datas.w;
-}
 
 /**
  *  First The ownverter will send reference data in this order.
@@ -303,8 +247,55 @@ serial_interface_menu_mode mode_asked = IDLEMODE;
 uint32_t cumul_receiv_datas = 0;
 uint32_t last_receive_calls = 0;
 uint32_t n_receive_calls = 3;
-bool sync_problem = 0;
+bool sync_problem = false;
 static uint8_t rs_id;
+char status_icon[2][4] = {{0xF0, 0x9F, 0x91, 0x8C}, {0xF0, 0x9F, 0x92, 0xA9}};
+
+void get_angle_and_pulsation() {
+	uint8_t data_validity;
+	float32_t value;
+	value = data.getLatest(ANALOG_SIN, &data_validity);
+	if (data_validity == DATA_IS_OK) {
+		sin_value = SINCOS_AMP * (value - SINCOS_OFFSET);
+	}
+	value = data.getLatest(ANALOG_COS, &data_validity);
+	if (data_validity == DATA_IS_OK) {
+		cos_value = SINCOS_AMP * (value - SINCOS_OFFSET);
+	}
+	// ANGLE ACQUISITION, ANGLE CLOSE LOOP
+	cos_theta = (int32_t)(cos_value * 2147483648.0F);
+	sin_theta = (int32_t)(sin_value * 2147483648.0F);
+	LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
+	LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
+	// angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of
+	// x+iy
+	w0_ref = 2.0F * PI * f0_ref;
+	// ANGLE OPEN LOOP
+	angle_cordic += w0_ref * control_task_period * 1.0e-6F;
+	angle_cordic = ot_modulo_2pi(angle_cordic);
+	pll_datas = pllAngle.calculateWithReturn(angle_cordic);
+	angle = ot_modulo_2pi((4.0F * (PI - pll_datas.angle)));
+	w = pll_datas.w;
+}
+
+void define_tx_datas() 
+{
+	/* Writting Va */
+	PUT_LOWER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.a, VOLTAGE_SCALE));
+	/* Writting Vb */
+	PUT_UPPER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.b, VOLTAGE_SCALE));
+	/* Writting Vc */
+	PUT_LOWER_12BITS(tx_consigne.buf_VcIac, to_12bits(Vabc.c, VOLTAGE_SCALE));
+	/* Writting frequency reference */
+	PUT_UPPER_12BITS(tx_consigne.buf_IbW, to_12bits(pll_datas.w, 500.0));
+	if (stop_recording == 1) {
+		RESET_COUNTER(tx_consigne.id_and_status);
+	} else {
+		KEEP_COUNT(tx_consigne.id_and_status);
+	}
+	SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
+}
+
 void reception_function(void)
 {
 	spin.gpio.setPin(PC13);
@@ -326,8 +317,10 @@ void reception_function(void)
 			from_12bits(GET_UPPER_12BITS(rx_consigne.buf_VcIac), 40.0, 20.0);
 		break;
 	}
-	if (IS_OVERCCURRENT(rx_consigne.id_and_status)) { // check if one phase experienced a
-							  // current > 8A and shut off everything
+	if (IS_OVERCCURRENT(rx_consigne.id_and_status)) 
+	{ 
+		// check if one phase experienced a
+		// current > 8A and shut off everything
 		// control_state = OVERCURRENT;
 	}
 	n_receive_calls++;
@@ -335,10 +328,13 @@ void reception_function(void)
 }
 bool scope_trigger(void)
 {
-	if (stop_recording == 0 && control_state != OVERCURRENT) {
-		return false;
-	} else {
+	if ((stop_recording == 1 && control_state != IDLE) || control_state == OVERCURRENT)
+	{
 		return true;
+	}
+	else 
+	{
+		return false;
 	}
 }
 void dump_scope_datas(ScopeMimicry &scope)
@@ -372,9 +368,9 @@ void setup_routine()
 	scope.set_trigger(scope_trigger);
 	scope.connectChannel(angle_cordic, "angle_cordic");
 	scope.connectChannel(angle, "angle_pll");
-	scope.connectChannel(V_a, "V_a");
-	scope.connectChannel(V_b, "V_b");
-	scope.connectChannel(V_c, "V_c");
+	scope.connectChannel(Vabc.a, "V_a");
+	scope.connectChannel(Vabc.b, "V_b");
+	scope.connectChannel(Vabc.c, "V_c");
 	scope.connectChannel(Iabc.a, "I_a");
 	scope.connectChannel(Iabc.b, "I_b");
 	scope.connectChannel(Iabc.c, "I_c");
@@ -443,7 +439,6 @@ void setup_routine()
 	communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct),
 				      reception_function,
 				      SPEED_20M); // custom configuration for RS485
-
 	task.createCritical(&loop_control_task, control_task_period);
 	task.startCritical();
 
@@ -515,37 +510,24 @@ void loop_communication_task()
  * It is executed second as defined by it suspend task in its last line.
  * You can use it to execute slow code such as state-machines.
  */
-char status_icon[2][4] = {{0xF0, 0x9F, 0x91, 0x8C}, {0xF0, 0x9F, 0x92, 0xA9}};
-static uint16_t data_length;
-static uint16_t kinit = 0;
 void loop_application_task()
 {
+	static uint32_t counter_app;
+	counter_app++;
 	int id = sync_problem;
 
 	printk("%i:", control_state);
-	printk("%8.2f:", 0.001F * (float32_t)total_ns);
+	printk("%i:", stop_recording);
+	printk("%f:", (double)Iq_ref);
+	printk("%f:", (double)f0_ref);
+
+	printk("%8.2f:", (double) (0.001F * (float32_t)total_ns));
 	printk("%d:", cumul_receiv_datas);
 	printk("%d:", last_receive_calls);
 	printk("%c%c%c%c:", status_icon[id][0], status_icon[id][1], status_icon[id][2],
 	       status_icon[id][3]);
 	printk("\n");
-	if (counter_time > 50000 && counter_time < 55000)
-	{
-		mode_asked = POWERMODE;
-	}
-	if (counter_time > (50000 + 100000))
-	{
-		mode_asked = IDLEMODE;
-	}
-	// // LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_7);
-	// LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_7, 10);
-	// LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_7);
 
-	if (control_state == POWER) {
-		spin.led.turnOn();
-	} else {
-		spin.led.turnOff();
-	}
 	if (is_downloading && control_state != POWER) {
 		dump_scope_datas(scope);
 		is_downloading = 0;
@@ -553,8 +535,9 @@ void loop_application_task()
 
 	switch (control_state) {
 	case IDLE:
+		spin.led.turnOff();
 		if (mode_asked == POWERMODE) {
-			startup_time = 0.0;
+			startup_time = 0.0F;
 			control_state = STARTUP;
 		}
 		break;
@@ -564,22 +547,28 @@ void loop_application_task()
 		}
 		break;
 	case POWER:
+		spin.led.turnOn();
 		if (mode_asked == IDLEMODE) {
 			control_state = IDLE;
 		}
 		break;
 	case OVERCURRENT:
-		if (mode_asked == IDLEMODE) {
+		spin.led.toggle();
+		if (mode_asked == IDLEMODE) 
+		{
+			task.stopCritical();
+			communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct),
+			reception_function,
+			SPEED_20M); // custom configuration for RS485
+			task.startCritical();
 			control_state = IDLE;
 		}
 		break;
 	default:
 		break;
 	}
-
-
 	// Pause between two runs of the task
-	task.suspendBackgroundMs(200);
+	task.suspendBackgroundMs(100);
 }
 /**
  * This is the code loop of the critical task
@@ -601,32 +590,19 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		pi_q.reset(0.0F);
 		pllAngle.reset(0.0F);
 		SET_STATUS_IDLE(tx_consigne.id_and_status);
-		SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
-		if (stop_recording == 1) 
-		{
-			RESET_COUNTER(tx_consigne.id_and_status);
-		}
-		else
-		{
-			KEEP_COUNT(tx_consigne.id_and_status);
-		}
-		pwm_enable = false;
 		break;
 	case STARTUP:
 		startup_time++;
 		ratio = startup_time / startup_end_time;
-		if (ratio > 1.0) ratio = 1.0;
+		if (ratio > 1.0F) ratio = 1.0F;
 		Vabc.a = ratio * Voffset;
 		Vabc.b = ratio * Voffset;
 		Vabc.c = ratio * Voffset;
-
+		/* for recording */
 		Iabc.a = I1_low_value_from_slave_a;
 		Iabc.b = I1_low_value_from_slave_b;
 		Iabc.c = I1_low_value_from_slave_c;
-		if (!pwm_enable) 
-		{
-			pwm_enable = true;
-		}
+	
 		SET_STATUS_POWER(tx_consigne.id_and_status);
 		break;
 	case POWER:
@@ -647,7 +623,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Vdq_module = ot_sqrt(Vdq.d * Vdq.d + Vdq.q * Vdq.q);
 		// REMOVE CURRENT CONTROL
 		// Vdq.d = 0.0;
-		// Vdq.q = Iq_ref;
+		// Vdq.q = Iq_ref * 0.2;
 		Vabc = transform.to_threephase(Vdq, angle);
 		Vabc.a += Voffset;
 		Vabc.b += Voffset;
@@ -655,39 +631,23 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		SET_STATUS_POWER(tx_consigne.id_and_status);
 		break;
 	}
-	/* Writting Va */
-	PUT_LOWER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.a, VOLTAGE_SCALE));
-
-	/* Writting Vb */
-	PUT_UPPER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.b, VOLTAGE_SCALE));
-
-	/* Writting Vc */
-	PUT_LOWER_12BITS(tx_consigne.buf_VcIac, to_12bits(Vabc.c, VOLTAGE_SCALE));
-
-	/* Writting frequency reference */
-	PUT_UPPER_12BITS(tx_consigne.buf_IbW, to_12bits(pll_datas.w, 500.0));
-
-	if (stop_recording == 1) {
-		RESET_COUNTER(tx_consigne.id_and_status);
-	} else {
-		KEEP_COUNT(tx_consigne.id_and_status);
+	define_tx_datas();
+	scope.acquire();
+	if (counter_time > 1000) { // Wait to be sure that other cards are power on.
+		cumul_receiv_datas += n_receive_calls;
+		last_receive_calls = n_receive_calls;
+		if (n_receive_calls != 3)
+		{
+			control_state = OVERCURRENT;
+			sync_problem = true;
+		}
+		communication.rs485.startTransmission();
+		n_receive_calls = 0;
 	}
-
-	SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
-
-// scope.acquire();
-if (counter_time > 1000) { // Wait to be sure that other cards are power on.
-	cumul_receiv_datas += n_receive_calls;
-	last_receive_calls = n_receive_calls;
-	// if ((n_receive_calls != 3))
-	//     sync_problem = 1;
-	communication.rs485.startTransmission();
-	n_receive_calls = 0;
-}
-time_toc = timing_counter_get();
-total_cycles = timing_cycles_get(&time_tic, &time_toc);
-total_ns = timing_cycles_to_ns(total_cycles);
-spin.gpio.resetPin(PC12);
+	time_toc = timing_counter_get();
+	total_cycles = timing_cycles_get(&time_tic, &time_toc);
+	total_ns = timing_cycles_to_ns(total_cycles);
+	spin.gpio.resetPin(PC12);
 }
 /**
  * This is the main function of this example

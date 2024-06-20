@@ -24,7 +24,7 @@
 
 	chosen {
 		zephyr,code-partition = &slot0_partition;
-		zephyr,console = &cdc_acm_uart0;
+		zephyr,console = &lpuart1;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,can-primary = &fdcan1;
