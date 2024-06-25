@@ -370,10 +370,10 @@ void setup_routine()
 	scope.connectChannel(angle, "angle_pll");
 	scope.connectChannel(Vabc.a, "V_a");
 	scope.connectChannel(Vabc.b, "V_b");
-	scope.connectChannel(Vabc.c, "V_c");
+	scope.connectChannel(Idq.d, "I_d");
 	scope.connectChannel(Iabc.a, "I_a");
 	scope.connectChannel(Iabc.b, "I_b");
-	scope.connectChannel(Iabc.c, "I_c");
+	scope.connectChannel(Idq.q, "I_q");
 	scope.connectChannel(w, "w");
 	scope.start();
 	/* for park control */
@@ -602,7 +602,6 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Iabc.a = I1_low_value_from_slave_a;
 		Iabc.b = I1_low_value_from_slave_b;
 		Iabc.c = I1_low_value_from_slave_c;
-	
 		SET_STATUS_POWER(tx_consigne.id_and_status);
 		break;
 	case POWER:
