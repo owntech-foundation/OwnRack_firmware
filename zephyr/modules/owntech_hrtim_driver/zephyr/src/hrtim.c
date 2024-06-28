@@ -32,6 +32,7 @@
 #include <stm32_ll_rcc.h>
 #include "assert.h"
 #include "hrtim.h"
+#include "zephyr/arch/arm/irq.h"
 
 /* variables for ISR */
 static const uint8_t HRTIM_IRQ_NUMBER = 67;
@@ -950,6 +951,7 @@ void hrtim_PeriodicEvent_en(hrtim_tu_t tu)
         LL_HRTIM_EnableIT_SYNC(HRTIM1); /* Enabling interruption on synch pulse in case of slave communication mode*/
 
     IRQ_CONNECT(HRTIM_IRQ_NUMBER, HRTIM_IRQ_PRIO, _hrtim_callback, NULL, HRTIM_IRQ_FLAGS);
+    // IRQ_DIRECT_CONNECT(HRTIM_IRQ_NUMBER, HRTIM_IRQ_PRIO, _hrtim_callback, IRQ_ZERO_LATENCY);
     irq_enable(HRTIM_IRQ_NUMBER);
 }
 
