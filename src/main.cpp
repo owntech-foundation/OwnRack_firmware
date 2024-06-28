@@ -41,6 +41,7 @@
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/console/console.h"
 #include <zephyr/timing/timing.h>
+#include <string.h>
 //---------- LL drivers --------------------------
 #include "stm32g4xx_ll_cordic.h"
 
@@ -48,48 +49,73 @@
 #define DMA_BUFFER_SIZE                                                                            \
 	10 // 3 byte for Va/Vb, 3 byte for Vc/(Ia/Ic), 3 byte for Ib and w, and 1 byte for
 	   // identifiant
+enum rs_id {
+	BRIDGE = 1,
+	MASTER_A = 2,
+	SLAVE_A1 = 3,
+	SLAVE_A2 = 4,
+	MASTER_B = 5,
+	SLAVE_B1 = 6,
+	SLAVE_B2 = 7,
+	MASTER_C = 8,
+	SLAVE_C1 = 9,
+	SLAVE_C2 = 10
+};
+enum rs_id spin_mode;
+
+struct bridge_frame {
+	uint16_t Va:12;
+	uint16_t Vb:12;
+	uint16_t Vc:12;
+	uint16_t w:12;
+	uint8_t stop_recording:1;
+	uint16_t no_data1:11;
+	uint16_t no_data2:12;
+	uint8_t abx_cmd:4;
+	uint8_t id:4;
+} __packed;
+
+typedef bridge_frame bridge_frame_t;
+
+bridge_frame_t data_bridge;
+
+struct phase_frame {
+	uint16_t V1:12;
+	uint16_t V2:12;
+	uint16_t I1:12;
+	uint16_t I2:12;
+	uint16_t VH:12;
+	uint16_t IH:12;
+	uint8_t status:4;
+	uint8_t id:4;
+} __packed;
+
+typedef phase_frame phase_frame_t;
+
+static phase_frame_t data_master_a;
+static phase_frame_t data_master_b;
+static phase_frame_t data_master_c;
+static phase_frame_t data_slave;
+static phase_frame_t datas_to_send;
+
+static float32_t I2_master_a;
+static float32_t I1_master_c;
+static float32_t I2_master_b;
+static float32_t I2_master_c;
+
+uint8_t buffer_tx[10];
+uint8_t buffer_rx[10];
+//
+enum autobox_msg {
+	STOP = 0, 
+	START = 1
+};
+static enum autobox_msg abx_cmd;
+
 #define RS_ID_MASTER  0
-#define RS_ID_SLAVE_A 1
-#define RS_ID_SLAVE_B 2
-#define RS_ID_SLAVE_C 3
 #define CURRENT_LIMIT 9.0F
 #define VOLTAGE_SCALE 50.0F
-// TODO: bitfield structure ?
-#define GET_ID(id_and_status) ((id_and_status >> 6) & 0x3) // retrieve identifier
-#define SET_ID(id_and_status, value)                                                               \
-	{                                                                                          \
-		id_and_status &= 0x3F;                                                             \
-		id_and_status |= ((value & 0x3) << 6);                                             \
-	}
-
-#define IS_OVERCCURRENT(id_and_status) ((id_and_status >> 5) & 1) // check current for safety
-/* check the status (IDLE MODE or POWER MODE) */
-#define GET_STATUS(id_and_status)      (id_and_status & 1)
-/* reroll counter to monitor the intern variables */
-#define REROLL_COUNTER(id_and_status)  ((id_and_status >> 1) & 1)
-#define SET_STATUS_IDLE(id_and_status)                                                             \
-	(id_and_status &= 0xFE) // assume that id_and_status is only one byte
-#define SET_STATUS_POWER(id_and_status) (id_and_status |= 0x1)   // bit 0 set to 1)
-#define RESET_COUNTER(id_and_status)    (id_and_status |= 0x2)   // bit 1 set to 1
-#define KEEP_COUNT(id_and_status)       (id_and_status &= 0x0fd) // bit 1 set to 0
-
-#define GET_UPPER_12BITS(buf_3bytes)                                                               \
-	((int16_t)((*(buf_3bytes + 2) << 4) + (*(buf_3bytes + 1) >> 4)))
-
-#define GET_LOWER_12BITS(buf_3bytes)                                                               \
-	((int16_t)(((*(buf_3bytes + 1) & 0xf) << 8) + (*(buf_3bytes)&0xff)))
-
-#define PUT_UPPER_12BITS(buf_3bytes, data)                                                         \
-	{                                                                                          \
-		*(buf_3bytes + 1) = (0xf0 & (data << 4)) | (0xf & *(buf_3bytes + 1));              \
-		*(buf_3bytes + 2) = (data & 0xff0) >> 4;                                           \
-	}
-
-#define PUT_LOWER_12BITS(buf_3bytes, data)                                                         \
-	{                                                                                          \
-		*buf_3bytes = data & 0xff;                                                         \
-		*(buf_3bytes + 1) = (0xf0 & *(buf_3bytes + 1)) | ((data & 0xf00) >> 8);            \
-	}
+#define GET_ID(buffer_rx) ((buffer_rx[9] >> 4) & 0xf)
 
 int16_t to_12bits(float32_t data, float32_t scale, float32_t offset = 0.0)
 {
@@ -186,24 +212,12 @@ float32_t duty_cycle;
 float32_t duty_cycle_leg1 = 0.2;
 float32_t duty_cycle_leg2 = 0.2;
 
-// TODO: test structure bit field for id_and_status ?
-struct consigne_struct {
-	uint8_t buf_Vab[3];    // Contains Va and Vb reference
-	uint8_t buf_VcIac[3];  // Contains Vc reference and IA OR IC measure
-	uint8_t buf_IbW[3];    // Contains Ib and frequency reference    //
-	uint8_t id_and_status; // Contains ID [7:6], OVERCURRENT [5], REROLL_COUNTER[1], STATUS [0]
-};
-
-struct consigne_struct tx_consigne;
-struct consigne_struct rx_consigne;
-uint8_t *buffer_tx = (uint8_t *)&tx_consigne;
-uint8_t *buffer_rx = (uint8_t *)&rx_consigne;
-
 uint32_t counter_time;
 three_phase_t Iabc_ref;
-ScopeMimicry scope(512, 9);
+ScopeMimicry scope(512, 13);
 static bool is_downloading = false;
 static bool stop_recording = 0;
+uint32_t decimation = 2;
 float32_t sin_value;
 float32_t cos_value;
 
@@ -239,7 +253,7 @@ enum serial_interface_menu_mode // LIST OF POSSIBLE MODES FOR THE OWNTECH CONVER
 enum control_state_mode {
 	IDLE = 0,
 	POWER = 1,
-	OVERCURRENT = 2,
+	ERROR_STATE = 2,
 	STARTUP = 3
 };
 control_state_mode control_state = IDLE;
@@ -278,57 +292,54 @@ void get_angle_and_pulsation() {
 	w = pll_datas.w;
 }
 
+void get_rs485_datas() 
+{
+	I2_master_a = from_12bits(data_master_a.I2, 50.0, 25.0);
+	I1_master_c = from_12bits(data_master_c.I1, 50.0, 25.0);
+	I2_master_c = from_12bits(data_master_c.I2, 50.0, 25.0);
+	I2_master_b = from_12bits(data_master_b.I2, 50.0, 25.0);
+
+	I1_low_value_from_slave_a = from_12bits(data_master_a.I1, 50.0, 25.0);
+	I1_low_value_from_slave_b = from_12bits(data_master_b.I1, 50.0, 25.0);
+	I1_low_value_from_slave_c = from_12bits(data_master_c.I1, 50.0, 25.0);
+}
+
 void define_tx_datas() 
 {
 	/* Writting Va */
-	PUT_LOWER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.a, VOLTAGE_SCALE));
+	data_bridge.Va = to_12bits(Vabc.a, VOLTAGE_SCALE);
 	/* Writting Vb */
-	PUT_UPPER_12BITS(tx_consigne.buf_Vab, to_12bits(Vabc.b, VOLTAGE_SCALE));
+	data_bridge.Vb = to_12bits(Vabc.b, VOLTAGE_SCALE);
 	/* Writting Vc */
-	PUT_LOWER_12BITS(tx_consigne.buf_VcIac, to_12bits(Vabc.c, VOLTAGE_SCALE));
+	data_bridge.Vc = to_12bits(Vabc.c, VOLTAGE_SCALE);
 	/* Writting frequency reference */
-	PUT_UPPER_12BITS(tx_consigne.buf_IbW, to_12bits(pll_datas.w, 500.0));
-	if (stop_recording == 1) {
-		RESET_COUNTER(tx_consigne.id_and_status);
-	} else {
-		KEEP_COUNT(tx_consigne.id_and_status);
-	}
-	SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
+	data_bridge.w = (0xFFF & (counter_time>>6));//to_12bits(pll_datas.w, 500.0);
+	data_bridge.stop_recording = scope.has_trigged();
+	data_bridge.id = BRIDGE;
+	memcpy(buffer_tx, &data_bridge, sizeof(data_bridge));
 }
 
 void reception_function(void)
 {
 	spin.gpio.setPin(PC13);
-	rs_id = GET_ID(rx_consigne.id_and_status);
+	rs_id = GET_ID(buffer_rx);
 	switch (rs_id) {
-	case RS_ID_SLAVE_A:
-		// get I value from phase A
-		I1_low_value_from_slave_a =
-			from_12bits(GET_UPPER_12BITS(rx_consigne.buf_VcIac), 40.0, 20.0);
+		case MASTER_A:
+			data_master_a = *(phase_frame *) buffer_rx;
 		break;
-	case RS_ID_SLAVE_B:
-		// get I value from phase B
-		I1_low_value_from_slave_b =
-			from_12bits(GET_LOWER_12BITS(rx_consigne.buf_IbW), 40.0, 20.0);
+	case MASTER_B:
+			data_master_b = *(phase_frame *) buffer_rx;
 		break;
-	case RS_ID_SLAVE_C:
-		// get I value from phase C
-		I1_low_value_from_slave_c =
-			from_12bits(GET_UPPER_12BITS(rx_consigne.buf_VcIac), 40.0, 20.0);
+	case MASTER_C:
+			data_master_c = *(phase_frame *) buffer_rx;
 		break;
-	}
-	if (IS_OVERCCURRENT(rx_consigne.id_and_status)) 
-	{ 
-		// check if one phase experienced a
-		// current > 8A and shut off everything
-		// control_state = OVERCURRENT;
 	}
 	n_receive_calls++;
 	spin.gpio.resetPin(PC13);
 }
 bool scope_trigger(void)
 {
-	if ((stop_recording == 1 && control_state != IDLE) || control_state == OVERCURRENT)
+	if ((stop_recording == 1 && control_state == POWER) || control_state == ERROR_STATE)
 	{
 		return true;
 	}
@@ -366,6 +377,7 @@ void setup_routine()
 {
 	// variable, software initialisation
 	scope.set_trigger(scope_trigger);
+	scope.set_delay(0.9);
 	scope.connectChannel(angle_cordic, "angle_cordic");
 	scope.connectChannel(angle, "angle_pll");
 	scope.connectChannel(Vabc.a, "V_a");
@@ -374,6 +386,10 @@ void setup_routine()
 	scope.connectChannel(Iabc.a, "I_a");
 	scope.connectChannel(Iabc.b, "I_b");
 	scope.connectChannel(Idq.q, "I_q");
+	scope.connectChannel(I2_master_a, "I2_master_a");
+	scope.connectChannel(I1_master_c, "I1_master_c");
+	scope.connectChannel(I2_master_c, "I2_master_c");
+	scope.connectChannel(I2_master_b, "I2_master_b");
 	scope.connectChannel(w, "w");
 	scope.start();
 	/* for park control */
@@ -396,8 +412,6 @@ void setup_routine()
 	Iabc.a = 0.0;
 	Iabc.b = 0.0;
 	Iabc.c = 0.0;
-	SET_STATUS_IDLE(tx_consigne.id_and_status);
-	SET_ID(tx_consigne.id_and_status, RS_ID_MASTER);
 
 	//------- hardware init ----
 	console_init();
@@ -436,7 +450,7 @@ void setup_routine()
 	task.startBackground(CommTask_num);
 
 	// TODO: make watchdog in each slave (if no data received between two count: disable pwm)
-	communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct),
+	communication.rs485.configure(buffer_tx, buffer_rx, sizeof(buffer_rx),
 				      reception_function,
 				      SPEED_20M); // custom configuration for RS485
 	task.createCritical(&loop_control_task, control_task_period);
@@ -515,19 +529,28 @@ void loop_application_task()
 	static uint32_t counter_app;
 	counter_app++;
 	int id = sync_problem;
+	printk("\033[2J");
+	printk("\033[H");
+	printk("ctrl state = %d\n", control_state);
+	printk("3? =  %d\n", last_receive_calls);
+	printk("Iq_ref = %6.2f [A]\n", (double)Iq_ref);
+	printk("    f0 = %6.2f [Hz]\n", (double)f0_ref);
+	printk("Vh a = %.2f\n", (double) from_12bits(data_master_a.VH, 100.0));
+	printk("Vh b = %.2f\n", (double) from_12bits(data_master_b.VH, 100.0));
+	printk("Vh c = %.2f\n", (double) from_12bits(data_master_c.VH, 100.0));
+	printk("stop_rec = %d\n", stop_recording);
+	printk("scope st = %d\n", scope.has_trigged());
+	printk("comm_pb_a = %d\n", data_master_a.V2);
+	printk("comm_pb_b = %d\n", data_master_b.V2);
+	printk("comm_pb_c = %d\n", data_master_c.V2);
+	printk("n_frame_pb_a= %d\n", data_master_a.V1);
+	printk("n_frame_pb_b= %d\n", data_master_b.V1);
+	printk("n_frame_pb_c = %d\n", data_master_c.V1);
+	printk("status_a= %d\n", data_master_a.status);
+	printk("status_b= %d\n", data_master_b.status);
+	printk("status_c = %d\n", data_master_c.status);
 
-	printk("%i:", control_state);
-	printk("%i:", stop_recording);
-	printk("%f:", (double)Iq_ref);
-	printk("%f:", (double)f0_ref);
-
-	printk("%8.2f:", (double) (0.001F * (float32_t)total_ns));
-	printk("%d:", cumul_receiv_datas);
-	printk("%d:", last_receive_calls);
-	printk("%c%c%c%c:", status_icon[id][0], status_icon[id][1], status_icon[id][2],
-	       status_icon[id][3]);
 	printk("\n");
-
 	if (is_downloading && control_state != POWER) {
 		dump_scope_datas(scope);
 		is_downloading = 0;
@@ -552,15 +575,12 @@ void loop_application_task()
 			control_state = IDLE;
 		}
 		break;
-	case OVERCURRENT:
+	case ERROR_STATE:
 		spin.led.toggle();
 		if (mode_asked == IDLEMODE) 
 		{
-			task.stopCritical();
-			communication.rs485.configure(buffer_tx, buffer_rx, sizeof(consigne_struct),
-			reception_function,
-			SPEED_20M); // custom configuration for RS485
-			task.startCritical();
+			// task.stopCritical();
+			// task.startCritical();
 			control_state = IDLE;
 		}
 		break;
@@ -568,7 +588,7 @@ void loop_application_task()
 		break;
 	}
 	// Pause between two runs of the task
-	task.suspendBackgroundMs(100);
+	task.suspendBackgroundMs(500);
 }
 /**
  * This is the code loop of the critical task
@@ -583,13 +603,14 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	time_tic = timing_counter_get();
 	counter_time++;
 	get_angle_and_pulsation();
+	get_rs485_datas();
 	switch (control_state) {
 	case IDLE:
-	case OVERCURRENT:
+	case ERROR_STATE:
 		pi_d.reset(0.0F);
 		pi_q.reset(0.0F);
 		pllAngle.reset(0.0F);
-		SET_STATUS_IDLE(tx_consigne.id_and_status);
+		data_bridge.abx_cmd = STOP;
 		break;
 	case STARTUP:
 		startup_time++;
@@ -599,10 +620,10 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Vabc.b = ratio * Voffset;
 		Vabc.c = ratio * Voffset;
 		/* for recording */
-		Iabc.a = I1_low_value_from_slave_a;
-		Iabc.b = I1_low_value_from_slave_b;
-		Iabc.c = I1_low_value_from_slave_c;
-		SET_STATUS_POWER(tx_consigne.id_and_status);
+		Iabc.a = from_12bits(data_master_a.I1, 50.0, 25.0);
+		Iabc.b = from_12bits(data_master_b.I1, 50.0, 25.0);
+		Iabc.c = from_12bits(data_master_c.I1, 50.0, 25.0);
+		data_bridge.abx_cmd = START;
 		break;
 	case POWER:
 		Idq_ref.q = Iq_ref;
@@ -611,7 +632,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 
 		Iabc.a = I1_low_value_from_slave_a;
 		Iabc.b = I1_low_value_from_slave_b;
-		Iabc.c = I1_low_value_from_slave_c;
+		Iabc.c = -(I1_low_value_from_slave_a + I1_low_value_from_slave_b);
 
 		Idq = transform.to_dqo(Iabc, angle);
 
@@ -627,17 +648,20 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Vabc.a += Voffset;
 		Vabc.b += Voffset;
 		Vabc.c += Voffset;
-		SET_STATUS_POWER(tx_consigne.id_and_status);
+		data_bridge.abx_cmd = START;
 		break;
 	}
 	define_tx_datas();
-	scope.acquire();
-	if (counter_time > 1000) { // Wait to be sure that other cards are power on.
+	if (counter_time % decimation == 0)
+	{
+		scope.acquire();
+	}
+	if (counter_time > 100) { // Wait to be sure that other cards are power on.
 		cumul_receiv_datas += n_receive_calls;
 		last_receive_calls = n_receive_calls;
 		if (n_receive_calls != 3)
 		{
-			control_state = OVERCURRENT;
+			control_state = ERROR_STATE;
 			sync_problem = true;
 		}
 		communication.rs485.startTransmission();

@@ -32,7 +32,6 @@
 #include <stm32_ll_rcc.h>
 #include "assert.h"
 #include "hrtim.h"
-
 /* variables for ISR */
 static const uint8_t HRTIM_IRQ_NUMBER = 67;
 static const uint8_t HRTIM_IRQ_PRIO = 0;
@@ -205,7 +204,16 @@ void _hrtim_callback()
         to master control task execution */
         LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_1, LL_GPIO_MODE_ALTERNATE);
 
-        k_busy_wait(1);
+        // k_busy_wait(1);
+		uint32_t au32_initial_ticks = DWT->CYCCNT;
+		if (au32_initial_ticks < 0xfffffbff)
+		{
+			while ((DWT->CYCCNT - au32_initial_ticks) < 1000);
+		}
+		else
+		{
+			while ((DWT->CYCCNT) < 1000);
+		}
 
         LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_1, LL_GPIO_MODE_OUTPUT);
     }
@@ -949,7 +957,8 @@ void hrtim_PeriodicEvent_en(hrtim_tu_t tu)
     if (LL_HRTIM_GetSyncInSrc(HRTIM1) == LL_HRTIM_SYNCIN_SRC_EXTERNAL_EVENT)
         LL_HRTIM_EnableIT_SYNC(HRTIM1); /* Enabling interruption on synch pulse in case of slave communication mode*/
 
-    IRQ_CONNECT(HRTIM_IRQ_NUMBER, HRTIM_IRQ_PRIO, _hrtim_callback, NULL, HRTIM_IRQ_FLAGS);
+    // IRQ_CONNECT(HRTIM_IRQ_NUMBER, HRTIM_IRQ_PRIO, _hrtim_callback, NULL, HRTIM_IRQ_FLAGS);
+    IRQ_DIRECT_CONNECT(HRTIM_IRQ_NUMBER, HRTIM_IRQ_PRIO, _hrtim_callback, IRQ_ZERO_LATENCY);
     irq_enable(HRTIM_IRQ_NUMBER);
 }
 
