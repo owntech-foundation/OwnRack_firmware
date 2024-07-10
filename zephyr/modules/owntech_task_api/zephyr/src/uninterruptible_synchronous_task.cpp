@@ -34,7 +34,6 @@
 #include "data_api_internal.h"
 #include "safety_internal.h"
 #include "SafetyAPI.h"
-
 /* size of stack area used by error thread */
 #define STACKSIZE 512
 #define PRIORITY 0

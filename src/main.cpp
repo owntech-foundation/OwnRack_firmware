@@ -26,7 +26,6 @@
  * @author Clément Foucher <clement.foucher@laas.fr>
  * @author Luiz Villa <luiz.villa@laas.fr>
  */
-
 //--------------OWNTECH APIs----------------------------------
 #include "DataAPI.h"
 #include "TaskAPI.h"
@@ -41,9 +40,13 @@
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/console/console.h"
 #include <zephyr/timing/timing.h>
+#include <zephyr/kernel.h>
 #include <string.h>
 //---------- LL drivers --------------------------
 #include "stm32g4xx_ll_cordic.h"
+#include "stm32g4xx_ll_tim.h"
+#include <stm32_ll_bus.h>
+
 
 #define DATACOUNT 8 // 8 - 1 : Can send 7 bytes of data
 #define DMA_BUFFER_SIZE                                                                            \
@@ -119,12 +122,12 @@ static enum autobox_msg abx_cmd;
 
 int16_t to_12bits(float32_t data, float32_t scale, float32_t offset = 0.0)
 {
-	return (int16_t)((data + offset) * 4095.0 / (scale));
+	return (int16_t)((data + offset) * 4095.0F / (scale));
 }
 
-float32_t from_12bits(int16_t data, float32_t scale, float32_t offset = 0.0)
+inline float32_t from_12bits(int16_t data, float32_t scale, float32_t offset = 0.0)
 {
-	return (scale * (float32_t)data) / 4095.0 - offset;
+	return (scale * (float32_t)data) / 4095.0F - offset;
 }
 
 __inline__ float32_t q31_to_f32(int32_t x)
@@ -156,7 +159,7 @@ void loop_application_task();   // code to be executed in the fast application t
 int8_t AppTask_num;             // Application Task number
 void loop_control_task();       // code to be executed in real-time at 20kHz
 
-static uint32_t control_task_period = 100; //[us] period of the control task
+static uint32_t control_task_period = 110; //[us] period of the control task
 static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
 // --- SIN-COS SCALING ------------------------------------------
 // en haute impedance.
@@ -265,7 +268,7 @@ bool sync_problem = false;
 static uint8_t rs_id;
 char status_icon[2][4] = {{0xF0, 0x9F, 0x91, 0x8C}, {0xF0, 0x9F, 0x92, 0xA9}};
 
-void get_angle_and_pulsation() {
+inline void get_angle_and_pulsation() {
 	uint8_t data_validity;
 	float32_t value;
 	value = data.getLatest(ANALOG_SIN, &data_validity);
@@ -292,7 +295,7 @@ void get_angle_and_pulsation() {
 	w = pll_datas.w;
 }
 
-void get_rs485_datas() 
+inline void get_rs485_datas() 
 {
 	I2_master_a = from_12bits(data_master_a.I2, 50.0, 25.0);
 	I1_master_c = from_12bits(data_master_c.I1, 50.0, 25.0);
@@ -304,7 +307,7 @@ void get_rs485_datas()
 	I1_low_value_from_slave_c = from_12bits(data_master_c.I1, 50.0, 25.0);
 }
 
-void define_tx_datas() 
+inline void define_tx_datas() 
 {
 	/* Writting Va */
 	data_bridge.Va = to_12bits(Vabc.a, VOLTAGE_SCALE);
@@ -321,7 +324,7 @@ void define_tx_datas()
 
 void reception_function(void)
 {
-	spin.gpio.setPin(PC13);
+	spin.gpio.setPin(PC7);
 	rs_id = GET_ID(buffer_rx);
 	switch (rs_id) {
 		case MASTER_A:
@@ -335,7 +338,7 @@ void reception_function(void)
 		break;
 	}
 	n_receive_calls++;
-	spin.gpio.resetPin(PC13);
+	spin.gpio.resetPin(PC7);
 }
 bool scope_trigger(void)
 {
@@ -366,6 +369,19 @@ void dump_scope_datas(ScopeMimicry &scope)
 	}
 	printk("end record\n");
 }
+
+void launch_transmission(void) {
+ // Check whether update interrupt is pending
+    if (LL_TIM_IsActiveFlag_UPDATE(TIM6)) {
+        // Clear the update interrupt flag
+        LL_TIM_ClearFlag_UPDATE(TIM6);
+		spin.gpio.setPin(PC7);
+		communication.rs485.startTransmission();
+		spin.gpio.resetPin(PC7);
+    }
+}
+
+
 //--------------SETUP FUNCTIONS-------------------------------
 /**
  * This is the setup routine.
@@ -426,23 +442,40 @@ void setup_routine()
 			 LL_CORDIC_INSIZE_32BITS,          /* q1.31 format for input data */
 			 LL_CORDIC_OUTSIZE_32BITS);
 
-	spin.version.setBoardVersion(TWIST_v_1_1_3);
-	twist.setVersion(shield_TWIST_V1_3); // Code only compatible for TWIST V1.2 for V1.3 change
+	spin.version.setBoardVersion(TWIST_v_1_1_4);
+	twist.setVersion(shield_TWIST_V1_4); // Code only compatible for TWIST V1.2 for V1.3 change
 					    // the version and enable the NGND
 	twist.initAllBuck(); // We need it to start HRTIM clock for control task interruption
 	timing_init();
 	timing_start();
-	spin.gpio.configurePin(PC12, OUTPUT);
-	spin.gpio.configurePin(PC13, OUTPUT);
+	spin.gpio.configurePin(PC8, OUTPUT);
+	spin.gpio.configurePin(PC7, OUTPUT);
 	//------ software init -----
 	communication.sync.initMaster(); // start the synchronisation
 
-	// dataAcquisition.enableTwistDefaultChannels();
+	// data.enableTwistDefaultChannels();
 
 	spin.adc.configureTriggerSource(2, hrtim_ev3);
 	data.enableShieldChannel(2, ANALOG_SIN);
 	data.enableShieldChannel(2, ANALOG_COS);
 
+    // Peripheral clock enable
+    LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM6);
+    LL_TIM_SetCounterMode(TIM6, LL_TIM_COUNTERMODE_UP);
+    LL_TIM_SetPrescaler(TIM6, (CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC/1e7) - 1);
+    LL_TIM_SetOnePulseMode(TIM6, LL_TIM_ONEPULSEMODE_SINGLE);
+    // LL_TIM_SetTriggerOutput(TIM6, LL_TIM_TRGO_RESET);
+    LL_TIM_SetTriggerOutput(TIM6, LL_TIM_TRGO_UPDATE);
+    LL_TIM_DisableMasterSlaveMode(TIM6);
+    LL_TIM_SetUpdateSource(TIM6, LL_TIM_UPDATESOURCE_REGULAR);
+	/* 50us */
+	LL_TIM_SetAutoReload(TIM6, 55*10);
+    LL_TIM_EnableIT_UPDATE(TIM6);
+
+
+
+ //    IRQ_DIRECT_CONNECT(TIM6_DAC_IRQn, 0, launch_transmission, IRQ_ZERO_LATENCY);
+	// irq_enable(TIM6_DAC_IRQn);
 	AppTask_num = task.createBackground(loop_application_task);
 	task.startBackground(AppTask_num);
 
@@ -482,6 +515,7 @@ void loop_communication_task()
 		mode_asked = IDLEMODE;
 		cumul_receiv_datas = 0;
 		Iq_ref = 0.0;
+		f0_ref = 0.0;
 		break;
 	case 'p':
 		mode_asked = POWERMODE;
@@ -599,9 +633,11 @@ void loop_application_task()
 __attribute__((section(".ramfunc"))) void loop_control_task()
 {
 	float32_t ratio;
-	spin.gpio.setPin(PC12);
 	time_tic = timing_counter_get();
+	/* to re-launch the timer 6 */
+	spin.gpio.resetPin(PC8);
 	counter_time++;
+	spin.gpio.setPin(PC8);
 	get_angle_and_pulsation();
 	get_rs485_datas();
 	switch (control_state) {
@@ -620,9 +656,9 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Vabc.b = ratio * Voffset;
 		Vabc.c = ratio * Voffset;
 		/* for recording */
-		Iabc.a = from_12bits(data_master_a.I1, 50.0, 25.0);
-		Iabc.b = from_12bits(data_master_b.I1, 50.0, 25.0);
-		Iabc.c = from_12bits(data_master_c.I1, 50.0, 25.0);
+		Iabc.a = I1_low_value_from_slave_a;
+		Iabc.b = I1_low_value_from_slave_b;
+		Iabc.c = I1_low_value_from_slave_c;
 		data_bridge.abx_cmd = START;
 		break;
 	case POWER:
@@ -631,8 +667,8 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Iabc_ref = transform.to_threephase(Idq_ref, angle);
 
 		Iabc.a = I1_low_value_from_slave_a;
-		Iabc.b = I1_low_value_from_slave_b;
-		Iabc.c = -(I1_low_value_from_slave_a + I1_low_value_from_slave_b);
+		Iabc.c = I1_low_value_from_slave_c;
+		Iabc.b = - (I1_low_value_from_slave_a + I1_low_value_from_slave_c);
 
 		Idq = transform.to_dqo(Iabc, angle);
 
@@ -670,7 +706,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	time_toc = timing_counter_get();
 	total_cycles = timing_cycles_get(&time_tic, &time_toc);
 	total_ns = timing_cycles_to_ns(total_cycles);
-	spin.gpio.resetPin(PC12);
+	spin.gpio.resetPin(PC8);
 }
 /**
  * This is the main function of this example

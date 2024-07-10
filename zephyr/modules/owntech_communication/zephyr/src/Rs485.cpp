@@ -270,6 +270,7 @@ void dma_channel_init_rx()
     DMA_InitStruct.PeriphRequest = LL_DMAMUX_REQ_USART3_RX;
     DMA_InitStruct.NbData = dma_buffer_size;
 
+	const uint8_t RS484_COMM_PRIO = 1;
     IRQ_DIRECT_CONNECT(17, 0, _dma_callback_rx, IRQ_ZERO_LATENCY);
     irq_enable(17);
 

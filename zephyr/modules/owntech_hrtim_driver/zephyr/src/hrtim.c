@@ -30,11 +30,13 @@
 
 /* include */
 #include <stm32_ll_rcc.h>
+#include "stm32g4xx_ll_tim.h"
+#include "stm32g4xx_ll_gpio.h"
 #include "assert.h"
 #include "hrtim.h"
 /* variables for ISR */
 static const uint8_t HRTIM_IRQ_NUMBER = 67;
-static const uint8_t HRTIM_IRQ_PRIO = 0;
+static const uint8_t HRTIM_IRQ_PRIO = 2;
 static const uint8_t HRTIM_IRQ_FLAGS = 0;
 static float32_t HRTIM_CLK_RESOLUTION = 184e-6;
 static uint32_t HRTIM_MINIM_FREQUENCY = TU_DEFAULT_FREQ;
@@ -205,14 +207,10 @@ void _hrtim_callback()
         LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_1, LL_GPIO_MODE_ALTERNATE);
 
         // k_busy_wait(1);
-		uint32_t au32_initial_ticks = DWT->CYCCNT;
-		if (au32_initial_ticks < 0xfffffbff)
-		{
-			while ((DWT->CYCCNT - au32_initial_ticks) < 1000);
-		}
-		else
-		{
-			while ((DWT->CYCCNT) < 1000);
+		uint32_t au32_initial_ticks = (DWT->CYCCNT) & 0x3ff;
+		uint32_t elapsed_time = 0;
+		while (elapsed_time < 855) { /* 855 = 5.029us */
+			elapsed_time = (DWT->CYCCNT - au32_initial_ticks)%1024;
 		}
 
         LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_1, LL_GPIO_MODE_OUTPUT);
