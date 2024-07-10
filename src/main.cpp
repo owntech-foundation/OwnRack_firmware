@@ -53,9 +53,11 @@
 #define DMA_BUFFER_SIZE 10
 
 #define UID_MASTER_A 0x3A004D
-#define UID_SLAVE_A1 0x37003D
+#define UID_SLAVE_A1 0x350030
 #define UID_MASTER_B 0x58002F
+#define UID_SLAVE_B1 0x340051
 #define UID_MASTER_C 0x400040
+#define UID_SLAVE_C1 0x3A004F
 
 enum {
 	MASTER,
@@ -75,11 +77,11 @@ enum rs_id {
 	SLAVE_C2 = 10
 };
 enum rs_id spin_mode;
+static bool is_master_phase;
 
 char TXT_ID[11][10] = {"_", "Bridge", "MASTER_A", "SLAVE_A1", "SLAVE_A2", "MASTER_B", "SLAVE_B1", "SLAVE_B2", "MASTER_C", "SLAVE_C1", "SLAVE_C2"};
 #define CURRENT_LIMIT         9.0F
 #define VOLTAGE_SCALE         50.0F
-#define RECEIVE_MODULO        30000
 // retrieve identifiant
 #define GET_ID(buffer_rx) ((buffer_rx[9] >> 4) & 0xf)
 
@@ -124,6 +126,8 @@ static float32_t V2_low_value;
 static float32_t V1_low_value;
 static float32_t I1_low_value = 0.0;
 static float32_t I2_low_value = 0.0;
+static float32_t I1_offset;
+static float32_t I2_offset;
 static float32_t V_high;
 static float32_t I_high;
 static float meas_data; // temp storage meas value (ctrl task)
@@ -135,7 +139,7 @@ static float32_t duty_cycle_leg2 = 0.2;
 /* Sinewave settings */
 float f0 = 10.0F;
 float angle;
-PrParams pr_params = PrParams(Ts, 0.001, 300.0, 0.0, 0.0, -48.0, 48.0);
+PrParams pr_params = PrParams(Ts, 0.005, 2000.0, 0.0, 0.0, -48.0, 48.0);
 Pr prop_res_leg1 = Pr();
 Pr prop_res_leg2 = Pr();
 ScopeMimicry scope(512, 7);
@@ -189,13 +193,24 @@ uint32_t counter;
 
 enum control_state_mode //
 {
-	IDLE = 0,
-	POWER = 1,
-	ERROR_STATE = 2
+	INIT = 0,
+	OFFSET = 1,
+	IDLE = 2,
+	POWER = 3,
+	ERROR_STATE = 4
+
 };
+enum error_codes {
+	NOERR = 0,
+	OVERCURRENT = 1,
+	COMM_PB_IN_IDLE = 2,
+	COMM_PB_IN_POWER = 3,
+} ;
+enum error_codes error_code = NOERR;
 enum control_state_mode control_state = IDLE;
 const char *state_msg[] = {"IDLE", "POWER", "ERROR_STATE", NULL};
 
+const uint32_t OFFSET_COUNT = 500;
 
 enum autobox_msg {
 	STOP = 0, 
@@ -218,7 +233,7 @@ uint32_t spin_id(void)
 void reception_function(void)
 {
 	uint8_t rs_id;
-	spin.gpio.setPin(PC13);
+	spin.gpio.setPin(PC7);
 	rs_id = GET_ID(buffer_rx);
 	if (rs_id == BRIDGE)
 	{
@@ -270,13 +285,13 @@ void reception_function(void)
 	}
 		
 	n_frame_received++;
-	spin.gpio.resetPin(PC13);
+	spin.gpio.resetPin(PC7);
 }
 inline void get_measures()
 {
 	meas_data = data.getLatest(I1_LOW);
 	if (meas_data != NO_VALUE) {
-		I1_low_value = meas_data;
+		I1_low_value = meas_data + I1_offset;
 	}
 	meas_data = data.getLatest(V1_LOW);
 	if (meas_data != NO_VALUE) {
@@ -289,9 +304,8 @@ inline void get_measures()
 
 	meas_data = data.getLatest(I2_LOW);
 	if (meas_data != NO_VALUE) {
-		I2_low_value = meas_data;
+		I2_low_value = meas_data + I2_offset;
 	}
-
 	meas_data = data.getLatest(V_HIGH);
 	if (meas_data != NO_VALUE) {
 		V_high = meas_data;
@@ -302,12 +316,24 @@ inline void get_measures()
 	}
 
 	vHigh_filtered = vHigh_filter.calculateWithReturn(V_high);
+
+	if (counter_time < OFFSET_COUNT)
+	{
+		I1_offset = -0.04F * (I1_low_value - I1_offset) + 0.96F * I1_offset;
+		I2_offset = -0.04F * (I2_low_value - I2_offset) + 0.96F * I2_offset;
+	}
+
 }
 inline void get_datas_from_rs485()
 {
-	if (counter_time > 150) 
+	if (counter_time > 150)
 	{
-		if (n_frame_received != 3 )
+		if ((n_frame_received != 3) && is_master_phase)
+		{
+			comm_problem++;
+			n_frame_received_pb = n_frame_received;
+		}
+		else if (n_frame_received != 4 && !is_master_phase)
 		{
 			comm_problem++;
 			n_frame_received_pb = n_frame_received;
@@ -347,11 +373,27 @@ inline void get_datas_from_rs485()
 inline void compute_control_state()
 {
 	switch (control_state) {
+		case INIT:
+			if (V_high > 12.0F)
+			{
+				control_state = OFFSET;
+			}
+			break;
+		case OFFSET:
+			if (counter_time > OFFSET_COUNT)
+			{
+				control_state = IDLE;
+			}
+			break;
 		case IDLE:
 			led_refresh_sampling = 6 * 10000; // 60*100ms
-			if (comm_problem > 10.0F)
+			if (comm_problem > 10.0F && abx_cmd == STOP)
 			{
 				control_state = ERROR_STATE;
+				if (error_code == NOERR)
+				{
+					error_code = COMM_PB_IN_IDLE;
+				}
 			} else if (abx_cmd == START) 
 			{
 				twist.startLeg(LEG1);
@@ -368,11 +410,16 @@ inline void compute_control_state()
 			if (comm_problem > 10.0F)
 			{
 				control_state = ERROR_STATE;
+				if (error_code == NOERR )
+				{
+					error_code = COMM_PB_IN_POWER;
+				}
 			}
 		break;
 		case ERROR_STATE:
 			led_refresh_sampling = (int)(0.2 * 10000); // 4*100ms
 			if (abx_cmd == STOP) {
+				comm_problem = 0;
 				control_state = IDLE;
 			}
 		break;
@@ -384,8 +431,12 @@ inline void manage_overcurrent()
 {
 	if (((I1_low_value > CURRENT_LIMIT) || (I2_low_value > CURRENT_LIMIT) ||
 	     (I1_low_value < -CURRENT_LIMIT) || (I2_low_value < -CURRENT_LIMIT)) &&
-	    counter_time > 10) {
+	    counter_time > 10 && control_state != OFFSET) {
 		control_state = ERROR_STATE;
+		if (error_code == NOERR)
+		{
+			error_code = OVERCURRENT;
+		}
 	}
 }
 //--------------SETUP FUNCTIONS-------------------------------
@@ -398,16 +449,31 @@ inline void manage_overcurrent()
 void setup_routine()
 {
 	//------- hardware init ----
-	spin.version.setBoardVersion(TWIST_v_1_1_2);
-	twist.setVersion(shield_TWIST_V1_2);
-	twist.initAllBuck(); // initialize in buck mode leg1 and leg2
-	communication.sync.initSlave(TWIST_v_1_1_2);
+	twist.disconnectAllCapacitor();
+	switch (spin_id()) 
+	{
+		case UID_MASTER_A:
+		case UID_MASTER_B:
+		case UID_MASTER_C:
+			spin.version.setBoardVersion(TWIST_v_1_1_2);
+			twist.setVersion(shield_TWIST_V1_2);
+			twist.initAllBuck(); // initialize in buck mode leg1 and leg2
+			communication.sync.initSlave(TWIST_v_1_1_2);
+			is_master_phase = true;
+		break;
+		default:
+			spin.version.setBoardVersion(TWIST_v_1_1_4);
+			twist.setVersion(shield_TWIST_V1_4);
+			twist.initAllBuck(); // initialize in buck mode leg1 and leg2
+			communication.sync.initSlave(TWIST_v_1_1_4);
+			is_master_phase = false;
+	}
 	communication.rs485.configure(buffer_tx, buffer_rx, sizeof(buffer_rx),
 				      reception_function, SPEED_20M); // RS485 at 20Mbits/s
 	timing_init();
 	timing_start();
-	spin.gpio.configurePin(PC12, OUTPUT);
-	spin.gpio.configurePin(PC13, OUTPUT);
+	spin.gpio.configurePin(PC8, OUTPUT);
+	spin.gpio.configurePin(PC7, OUTPUT);
 	//------ software init -----
 	scope.connectChannel(I1_low_value, "I1");
 	scope.connectChannel(I2_low_value, "I2");
@@ -427,10 +493,15 @@ void setup_routine()
 			/* TWIST V1.2 not calibrated */
 			data.setParameters(I1_LOW, 0.005, -10.0);
 			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_A1:
 			spin_mode = SLAVE_A1;
 			control_mode = SLAVE;
+			// not sure of calibration
+			data.setParameters(I1_LOW, 0.005, -10.0);
+			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_MASTER_B:
 			spin_mode = MASTER_B;
@@ -438,6 +509,15 @@ void setup_routine()
 			/* TWIST V1.2 not calibrated */
 			data.setParameters(I1_LOW, 0.005, -10.0);
 			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
+		break;
+		case UID_SLAVE_B1:
+			spin_mode = SLAVE_B1;
+			control_mode = SLAVE;
+			// not sure of calibration
+			data.setParameters(I1_LOW, 0.005, -10.0);
+			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_MASTER_C:
 			spin_mode = MASTER_C;
@@ -445,6 +525,15 @@ void setup_routine()
 			/* TWIST V1.2 not calibrated */
 			data.setParameters(I1_LOW, 0.005, -10.0);
 			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
+		break;
+		case UID_SLAVE_C1:
+			spin_mode = SLAVE_C1;
+			control_mode = SLAVE;
+			// not sure of calibration
+			data.setParameters(I1_LOW, 0.005, -10.0);
+			data.setParameters(I2_LOW, 0.005, -10.0);
+			data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 	}
 	// PR RESONANT
@@ -452,6 +541,8 @@ void setup_routine()
 	prop_res_leg2.init(pr_params);
 	n_frame_received = 3;
 	comm_problem = 0.0F;
+	I1_offset = 0.0;
+	I2_offset = 0.0;
 	
 	/* Configure and Launch Tasks */
 	CommTask_num = task.createBackground(loop_communication_task);
@@ -472,6 +563,10 @@ void loop_communication_task()
 {
 	received_serial_char = console_getchar();
 	switch (received_serial_char) {
+		case 'i':
+			communication.rs485.configure(buffer_tx, buffer_rx, sizeof(buffer_rx),
+								 reception_function, SPEED_20M); // RS485 at 20Mbits/s
+			break;		
 		case 'r':
 			is_downloading = true;
 		break;
@@ -490,8 +585,14 @@ void loop_application_task()
 	printk("record = %d\n", data_bridge.stop_recording);
 	printk("trigged %d\n", scope.has_trigged());
 	printk("control %d\n", control_state);
-	printk("comm_problem: %f\n", comm_problem);
-	printk("n_frame_received = %d\n", n_frame_received);
+	printk("comm_problem: %f\n", (double)comm_problem);
+	printk("n_frame_received = %d\n", n_frame_received_pb);
+	printk("I1_offset = %f\n", (double) I1_offset);
+	printk("I2_offset = %f\n", (double) I2_offset);
+	printk("I1_low_value = %f\n", (double) I1_low_value);
+	printk("Vhigh = %f\n", (double) V_high);
+	printk("is_master_phase = %d\n",  is_master_phase);
+	printk("error_code = %d\n", error_code);
 	printk("%d\n", counter_time);
 
 	if (is_downloading) {
@@ -514,7 +615,7 @@ void loop_application_task()
  */
 __attribute__((section(".ramfunc"))) void loop_control_task()
 {
-	spin.gpio.setPin(PC12);
+	spin.gpio.setPin(PC8);
 	time_tic = timing_counter_get();
 	counter_time++;
 	get_datas_from_rs485();
@@ -573,7 +674,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	time_toc = timing_counter_get();
 	total_cycles = timing_cycles_get(&time_tic, &time_toc);
 	total_ns = timing_cycles_to_ns(total_cycles);
-	spin.gpio.resetPin(PC12);
+	spin.gpio.resetPin(PC8);
 }
 /**
  * This is the main function of this example
