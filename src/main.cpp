@@ -163,6 +163,12 @@ void loop_control_task();       // code to be executed in real-time at 20kHz
 static uint32_t control_task_period = 110; //[us] period of the control task
 static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
 
+static LowPassFirstOrderFilter Id_filter(100e-6, 10e-3);
+static LowPassFirstOrderFilter Iq_filter(100e-6, 10e-3);
+
+static float32_t Id_filtered;
+static float32_t Iq_filtered;
+
 //---- HALL SENSOR FILTER ----------------------------------------
 
 /* Hall effect sensors */
@@ -173,6 +179,8 @@ static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
 static uint8_t HALL1_value;
 static uint8_t HALL2_value;
 static uint8_t HALL3_value;
+
+static const float32_t Ts = 100.e-6F;
 
 static uint8_t angle_index;
 static float32_t hall_angle;
@@ -219,16 +227,16 @@ static Pid pi_q;
 PllDatas pll_datas;
 static float32_t w;
 static PllAngle pllAngle;
-static const float32_t Ts = control_task_period * 1.0e-6F;
+// static const float32_t Ts = control_task_period * 1.0e-6F;
 static const float32_t Kp = 0.035F;
 static const float32_t Ti = 0.001029F;
 static const float32_t Td = 0.0F;
 static const float32_t N = 1.0F;
-static const float32_t lower_bound = -60.0F;
-static const float32_t upper_bound = 60.0F;
+static const float32_t lower_bound = -15.0F; // -Vhigh
+static const float32_t upper_bound = 15.0F;  // +Vhigh
 
 /* assume the DC Bus is 48V (~50V) */
-static float32_t Voffset = 25.0;
+static float32_t Voffset = 15.0;  //Vhigh divided by 2
 static float32_t startup_time;
 const static float32_t startup_end_time = 1000.0;
 
@@ -385,6 +393,17 @@ inline void get_position_and_speed()
 
 	angle_filtered = pllDatas.angle;
 	w_meas = w_mes_filter.calculateWithReturn(pllDatas.w);
+
+	// w0_ref = 2.0F * PI * f0_ref;
+	// ANGLE OPEN LOOP
+	
+	// angle_filtered += w0_ref * control_task_period * 1.0e-6F;
+	
+	// angle_filtered = ot_modulo_2pi(angle_filtered);
+	// w_meas = w0_ref;
+
+
+
 }
 
 
@@ -409,7 +428,8 @@ inline void define_tx_datas()
 	/* Writting Vc */
 	data_bridge.Vc = to_12bits(Vabc.c, VOLTAGE_SCALE);
 	/* Writting frequency reference */
-	data_bridge.w = (0xFFF & (counter_time>>6));//to_12bits(pll_datas.w, 500.0);
+	// data_bridge.w = (0xFFF & (counter_time>>6));//to_12bits(pll_datas.w, 500.0);
+	data_bridge.w = to_12bits(w_meas, 500.0);
 	data_bridge.stop_recording = scope.has_trigged();
 	data_bridge.id = BRIDGE;
 	memcpy(buffer_tx, &data_bridge, sizeof(data_bridge));
@@ -417,7 +437,7 @@ inline void define_tx_datas()
 
 void reception_function(void)
 {
-	spin.gpio.setPin(PC7);
+	// spin.gpio.setPin(PC7);
 	rs_id = GET_ID(buffer_rx);
 	switch (rs_id) {
 		case MASTER_A:
@@ -431,7 +451,7 @@ void reception_function(void)
 		break;
 	}
 	n_receive_calls++;
-	spin.gpio.resetPin(PC7);
+	// spin.gpio.resetPin(PC7);
 }
 bool scope_trigger(void)
 {
@@ -468,9 +488,9 @@ void launch_transmission(void) {
     if (LL_TIM_IsActiveFlag_UPDATE(TIM6)) {
         // Clear the update interrupt flag
         LL_TIM_ClearFlag_UPDATE(TIM6);
-		spin.gpio.setPin(PC7);
+		// spin.gpio.setPin(PC7);
 		communication.rs485.startTransmission();
-		spin.gpio.resetPin(PC7);
+		// spin.gpio.resetPin(PC7);
     }
 }
 
@@ -485,6 +505,10 @@ void launch_transmission(void) {
 void setup_routine()
 {
 	// variable, software initialisation
+	spin.gpio.configurePin(HALL1, INPUT);
+	spin.gpio.configurePin(HALL2, INPUT);
+	spin.gpio.configurePin(HALL3, INPUT);
+
 	scope.set_trigger(scope_trigger);
 	scope.set_delay(0.9);
 	scope.connectChannel(angle_cordic, "angle_cordic");
@@ -542,8 +566,8 @@ void setup_routine()
 	twist.initAllBuck(); // We need it to start HRTIM clock for control task interruption
 	timing_init();
 	timing_start();
-	spin.gpio.configurePin(PC8, OUTPUT);
-	spin.gpio.configurePin(PC7, OUTPUT);
+	// spin.gpio.configurePin(PC8, OUTPUT);
+	// spin.gpio.configurePin(PC7, OUTPUT);
 	//------ software init -----
 	communication.sync.initMaster(); // start the synchronisation
 
@@ -617,12 +641,12 @@ void loop_communication_task()
 		break;
 	case 'u':
 		if (Iq_ref < CURRENT_LIMIT) {
-			Iq_ref += 0.5;
+			Iq_ref += 0.1;
 		}
 		break;
 	case 'd':
 		if (Iq_ref > 0.0) {
-			Iq_ref -= 0.5;
+			Iq_ref -= 0.1;
 		}
 		break;
 	case 'j':
@@ -677,6 +701,8 @@ void loop_application_task()
 	printk("status_a     = %d\n", data_master_a.status);
 	printk("status_b     = %d\n", data_master_b.status);
 	printk("status_c     = %d\n", data_master_c.status);
+	printk("Id          = %f\n", Id_filtered);
+	printk("Iq          = %f\n", Iq_filtered);
 
 	printk("\n");
 	if (is_downloading && control_state != POWER) {
@@ -730,12 +756,13 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	time_tic = timing_counter_get();
 	/* to re-launch the timer 6 */
 	
-	spin.gpio.resetPin(PC8);
+	// spin.gpio.resetPin(PC8);
 	counter_time++;
-	spin.gpio.setPin(PC8);
+	// spin.gpio.setPin(PC8);
 
 	// get_angle_and_pulsation();
 	get_position_and_speed();
+	// w_meas = 0;
 	
 	get_rs485_datas();
 	
@@ -771,6 +798,8 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		Iabc.b = - (I1_low_value_from_slave_a + I1_low_value_from_slave_c);
 
 		Idq = transform.to_dqo(Iabc, angle_filtered); //used for control
+		Id_filtered = Id_filter.calculateWithReturn(Idq.d);
+		Iq_filtered = Iq_filter.calculateWithReturn(Idq.q);
 
 		Vdq.d = pi_d.calculateWithReturn(Idq_ref.d, Idq.d);
 		Vdq.q = pi_q.calculateWithReturn(Idq_ref.q, Idq.q);
@@ -806,7 +835,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	time_toc = timing_counter_get();
 	total_cycles = timing_cycles_get(&time_tic, &time_toc);
 	total_ns = timing_cycles_to_ns(total_cycles);
-	spin.gpio.resetPin(PC8);
+	// spin.gpio.resetPin(PC8);
 }
 /**
  * This is the main function of this example
