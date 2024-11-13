@@ -6,7 +6,8 @@ def stlink_to_usb():
 
     # Define the search and replace strings
     search_str = "zephyr,console = &lpuart1;"
-    replace_str = "zephyr,console = &cdc_acm_uart0;"
+    # replace_str = "zephyr,console = &cdc_acm_uart0;"
+    replace_str = "zephyr,console = &lpuart1;"
 
     # Read the contents of the file
     with open(dts_path, 'r') as file:
