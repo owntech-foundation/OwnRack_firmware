@@ -37,6 +37,7 @@
 #include "transform.h"
 #include "filters.h"
 #include "ScopeMimicry.h"
+#include "control_factory.h"
 //------------ZEPHYR DRIVERS----------------------
 #include "zephyr/console/console.h"
 #include <zephyr/timing/timing.h>
@@ -161,6 +162,35 @@ void loop_control_task();       // code to be executed in real-time at 20kHz
 
 static uint32_t control_task_period = 110; //[us] period of the control task
 static LowPassFirstOrderFilter vHigh_filter(100e-6, 1e-3);
+
+//---- HALL SENSOR FILTER ----------------------------------------
+
+/* Hall effect sensors */
+#define HALL1 PC6
+#define HALL2 PC7
+#define HALL3 PD2
+
+static uint8_t HALL1_value;
+static uint8_t HALL2_value;
+static uint8_t HALL3_value;
+
+static uint8_t angle_index;
+static float32_t hall_angle;
+static PllAngle pllangle = controlLibFactory.pllAngle(Ts, 10.0F, 0.04F);
+static PllDatas pllDatas;
+static float32_t angle_filtered;
+static float32_t w_meas;
+/*
+ * one sector for one index value
+ * index = H1*2^0 + H2*2^1 + H3*2^2
+ */
+static int16_t sector[] = {-1, 5, 1, 0, 3, 4, 2};
+static float32_t k_angle_offset = 0.0F;
+
+static LowPassFirstOrderFilter w_mes_filter = controlLibFactory.lowpassfilter(Ts, 5.0e-3F);
+
+
+
 // --- SIN-COS SCALING ------------------------------------------
 // en haute impedance.
 const float SINCOS_AMP = 1.0 / 620.0; // 1.0 / 588.0;
@@ -271,29 +301,92 @@ char status_icon[2][4] = {{0xF0, 0x9F, 0x91, 0x8C}, {0xF0, 0x9F, 0x92, 0xA9}};
 inline void get_angle_and_pulsation() {
 	uint8_t data_validity;
 	float32_t value;
+	
 	value = data.getLatest(ANALOG_SIN, &data_validity);
+	
 	if (data_validity == DATA_IS_OK) {
 		sin_value = SINCOS_AMP * (value - SINCOS_OFFSET);
 	}
+	
 	value = data.getLatest(ANALOG_COS, &data_validity);
+	
 	if (data_validity == DATA_IS_OK) {
 		cos_value = SINCOS_AMP * (value - SINCOS_OFFSET);
 	}
 	// ANGLE ACQUISITION, ANGLE CLOSE LOOP
 	cos_theta = (int32_t)(cos_value * 2147483648.0F);
 	sin_theta = (int32_t)(sin_value * 2147483648.0F);
+	
 	LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
+	
 	LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
+	
 	// angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of
+	
 	// x+iy
 	w0_ref = 2.0F * PI * f0_ref;
 	// ANGLE OPEN LOOP
+	
 	angle_cordic += w0_ref * control_task_period * 1.0e-6F;
+	
 	angle_cordic = ot_modulo_2pi(angle_cordic);
+	
 	pll_datas = pllAngle.calculateWithReturn(angle_cordic);
-	angle = ot_modulo_2pi((4.0F * (PI - pll_datas.angle)));
+	
+	angle = ot_modulo_2pi((PI - pll_datas.angle));
 	w = pll_datas.w;
 }
+
+/**
+ * @brief a periodmeter function which estimate pulsation
+ * for the sector variable (one integer value correspond to π/3).
+ *
+ * @param sector assume sector is integer in [0, 5]
+ * @param time in [s]
+ * @return pulsation (float)
+ */
+float32_t pulsation_estimator(int16_t sector, float32_t time)
+{
+	static float32_t w_estimate_intern = 0.0F;
+	static int16_t prev_sector;
+	static float32_t prev_time = 0.0F;
+	int16_t delta_sector;
+	float32_t sixty_degre_step_time;
+	delta_sector = sector - prev_sector;
+	prev_sector = sector;
+	if (delta_sector == 1 || delta_sector == -5) {
+		// positive speed
+		sixty_degre_step_time = (time - prev_time);
+		w_estimate_intern = (PI / 3.0) / sixty_degre_step_time;
+		prev_time = time;
+	}
+	if (delta_sector == -1 || delta_sector == 5) {
+		sixty_degre_step_time = (time - prev_time);
+		w_estimate_intern = (-PI / 3.0) / sixty_degre_step_time;
+		prev_time = time;
+	}
+	return w_estimate_intern;
+}
+
+inline void get_position_and_speed()
+{
+	// we build angle index using HALL values.
+	HALL1_value = spin.gpio.readPin(HALL1);
+	HALL2_value = spin.gpio.readPin(HALL2);
+	HALL3_value = spin.gpio.readPin(HALL3);
+
+	angle_index = HALL3_value * 4 + HALL2_value * 2 + HALL1_value * 1;
+
+	hall_angle = ot_modulo_2pi(PI / 3.0 * sector[angle_index] + PI * k_angle_offset / 24.0);  //offset may be used to fine tune angle measurement
+
+	// w_estimate = pulsation_estimator(sector[angle_index], counter_time * Ts);
+
+	pllDatas = pllangle.calculateWithReturn(hall_angle);
+
+	angle_filtered = pllDatas.angle;
+	w_meas = w_mes_filter.calculateWithReturn(pllDatas.w);
+}
+
 
 inline void get_rs485_datas() 
 {
@@ -395,7 +488,7 @@ void setup_routine()
 	scope.set_trigger(scope_trigger);
 	scope.set_delay(0.9);
 	scope.connectChannel(angle_cordic, "angle_cordic");
-	scope.connectChannel(angle, "angle_pll");
+	scope.connectChannel(angle_filtered, "angle_hal");
 	scope.connectChannel(Vabc.a, "V_a");
 	scope.connectChannel(Vabc.b, "V_b");
 	scope.connectChannel(Idq.d, "I_d");
@@ -420,6 +513,7 @@ void setup_routine()
 		// control_state = OVERCURRENT;
 	}
 	pllAngle.reset(0.F);
+	pllangle.reset(0.F);  // attention, lowercase a (to be changed)
 	Vabc.a = 0.0;
 	Vabc.b = 0.0;
 	Vabc.c = 0.0;
@@ -565,24 +659,24 @@ void loop_application_task()
 	int id = sync_problem;
 	printk("\033[2J");
 	printk("\033[H");
-	printk("ctrl state = %d\n", control_state);
-	printk("3? =  %d\n", last_receive_calls);
-	printk("Iq_ref = %6.2f [A]\n", (double)Iq_ref);
-	printk("    f0 = %6.2f [Hz]\n", (double)f0_ref);
-	printk("Vh a = %.2f\n", (double) from_12bits(data_master_a.VH, 100.0));
-	printk("Vh b = %.2f\n", (double) from_12bits(data_master_b.VH, 100.0));
-	printk("Vh c = %.2f\n", (double) from_12bits(data_master_c.VH, 100.0));
-	printk("stop_rec = %d\n", stop_recording);
-	printk("scope st = %d\n", scope.has_trigged());
-	printk("comm_pb_a = %d\n", data_master_a.V2);
-	printk("comm_pb_b = %d\n", data_master_b.V2);
-	printk("comm_pb_c = %d\n", data_master_c.V2);
-	printk("n_frame_pb_a= %d\n", data_master_a.V1);
-	printk("n_frame_pb_b= %d\n", data_master_b.V1);
+	printk("ctrl state   = %d\n", control_state);
+	printk("3? 		     = %d\n", last_receive_calls);
+	printk("Iq_ref 	     = %6.2f [A]\n", (double)Iq_ref);
+	printk("    f0       = %6.2f [Hz]\n", (double)f0_ref);
+	printk("Vh a 	     = %.2f [V]\n", (double) from_12bits(data_master_a.VH, 100.0));
+	printk("Vh b  	     = %.2f [V]\n", (double) from_12bits(data_master_b.VH, 100.0));
+	printk("Vh c 	     = %.2f [V]\n", (double) from_12bits(data_master_c.VH, 100.0));
+	printk("stop_rec     = %d\n", stop_recording);
+	printk("scope st     = %d\n", scope.has_trigged());
+	printk("comm_pb_a    = %d\n", data_master_a.V2);
+	printk("comm_pb_b    = %d\n", data_master_b.V2);
+	printk("comm_pb_c    = %d\n", data_master_c.V2);
+	printk("n_frame_pb_a = %d\n", data_master_a.V1);
+	printk("n_frame_pb_b = %d\n", data_master_b.V1);
 	printk("n_frame_pb_c = %d\n", data_master_c.V1);
-	printk("status_a= %d\n", data_master_a.status);
-	printk("status_b= %d\n", data_master_b.status);
-	printk("status_c = %d\n", data_master_c.status);
+	printk("status_a     = %d\n", data_master_a.status);
+	printk("status_b     = %d\n", data_master_b.status);
+	printk("status_c     = %d\n", data_master_c.status);
 
 	printk("\n");
 	if (is_downloading && control_state != POWER) {
@@ -635,11 +729,16 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	float32_t ratio;
 	time_tic = timing_counter_get();
 	/* to re-launch the timer 6 */
+	
 	spin.gpio.resetPin(PC8);
 	counter_time++;
 	spin.gpio.setPin(PC8);
-	get_angle_and_pulsation();
+
+	// get_angle_and_pulsation();
+	get_position_and_speed();
+	
 	get_rs485_datas();
+	
 	switch (control_state) {
 	case IDLE:
 	case ERROR_STATE:
@@ -662,15 +761,16 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		data_bridge.abx_cmd = START;
 		break;
 	case POWER:
+
 		Idq_ref.q = Iq_ref;
 		Idq_ref.d = 0.0;
-		Iabc_ref = transform.to_threephase(Idq_ref, angle);
+		Iabc_ref = transform.to_threephase(Idq_ref, angle_filtered); // used for debugging
 
 		Iabc.a = I1_low_value_from_slave_a;
 		Iabc.c = I1_low_value_from_slave_c;
 		Iabc.b = - (I1_low_value_from_slave_a + I1_low_value_from_slave_c);
 
-		Idq = transform.to_dqo(Iabc, angle);
+		Idq = transform.to_dqo(Iabc, angle_filtered); //used for control
 
 		Vdq.d = pi_d.calculateWithReturn(Idq_ref.d, Idq.d);
 		Vdq.q = pi_q.calculateWithReturn(Idq_ref.q, Idq.q);
@@ -680,7 +780,7 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 		// REMOVE CURRENT CONTROL
 		// Vdq.d = 0.0;
 		// Vdq.q = Iq_ref * 0.2;
-		Vabc = transform.to_threephase(Vdq, angle);
+		Vabc = transform.to_threephase(Vdq, angle_filtered);
 		Vabc.a += Voffset;
 		Vabc.b += Voffset;
 		Vabc.c += Voffset;
