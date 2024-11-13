@@ -472,7 +472,8 @@ void setup_routine()
 				      reception_function, SPEED_20M); // RS485 at 20Mbits/s
 	timing_init();
 	timing_start();
-	spin.gpio.configurePin(PC8, OUTPUT);
+	// digital outputs to monitor task timing (with scope)
+	spin.gpio.configurePin(PC8, OUTPUT); 
 	spin.gpio.configurePin(PC7, OUTPUT);
 	//------ software init -----
 	scope.connectChannel(I1_low_value, "I1");
@@ -539,7 +540,7 @@ void setup_routine()
 	// PR RESONANT
 	prop_res_leg1.init(pr_params);
 	prop_res_leg2.init(pr_params);
-	n_frame_received = 3;
+	n_frame_received = 3;  			// used to detect problems - boqrds should receive 3 messages at the beginning of their control task
 	comm_problem = 0.0F;
 	I1_offset = 0.0;
 	I2_offset = 0.0;

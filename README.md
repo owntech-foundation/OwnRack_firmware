@@ -1,11 +1,55 @@
 # Three phase control with three boards
 
-**Warning** : This code as it is is compatible ONLY with twist V1.2, to support TWIST V1.3 you need to use function `power.setShieldVersion(shield_TWIST_V1_3)` and enable the NGND to get measures.
+This code allows the control of a OwnRack to fast prototype motor control. 
 
+
+## Preliminary steps
+
+Retrieve all the addresses of all the twist boards by doing : 
+
+- click on `PlatformIO: new terminal`
+- enter `pio device list`
+- you should get a result as: 
+   ```bash
+    /dev/ttyACM0
+    ------------
+    Hardware ID: USB VID:PID=2FE3:0100 SER=5056500D003A004D LOCATION=1-3:1.0
+    Description: SPIN
+   ```
+- The address in this example is the last six digits of SER `3A004D`
+
+
+## rack config 13/11/2024
+from right to left
+1. 3A004D
+2. 350030
+3. 37003D - Bridge board
+4. 58002F
+5. 340051
+6. 400040
+7. 3A004F
+
+This means
+
+1. UID_MASTER_A 0x3A004D
+2. UID_SLAVE_A1 0x350030
+4. UID_MASTER_B 0x58002F
+5. UID_SLAVE_B1 0x340051
+6. UID_MASTER_C 0x400040
+7. UID_SLAVE_C1 0x3A004F
+
+
+
+Check the main to verify which board is supposed to be `master` or `slave`. 
+
+
+Comment:
+- .ramfunc can be used to speed up code execution time
+- using dedicated CCM SRAM is also a way to speed up execution (RM0440 v8 page 87). 
+- it would be interesting to find a way to connect the critical task to the CCM SRAM
 
 ## Overview
 
-![](Image/schema_twist.jpg)
 
 ### Requeirements
 
