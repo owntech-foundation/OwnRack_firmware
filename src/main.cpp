@@ -60,7 +60,7 @@
 // #define UID_SLAVE_C1 0x3A004F
 
 // PHASE A
-#define UID_MASTER_A 0x3A004D
+#define UID_MASTER_A 0x2B002D
 #define UID_SLAVE_A1 0x2B004E
 #define UID_SLAVE_A2 0x2A004B
 #define UID_SLAVE_A3 0x2A004D
@@ -70,7 +70,7 @@
 #define UID_SLAVE_A7 0x290050
 
 // PHASE B
-#define UID_MASTER_B 0x58002F
+#define UID_MASTER_B 0x290039
 #define UID_SLAVE_B1 0x2B001A
 #define UID_SLAVE_B2 0x27003E
 #define UID_SLAVE_B3 0x290047
@@ -80,7 +80,7 @@
 #define UID_SLAVE_B7 0x2A0033
 
 // PHASE C
-#define UID_MASTER_C 0x400040
+#define UID_MASTER_C 0x340051
 #define UID_SLAVE_C1 0x290028
 #define UID_SLAVE_C2 0x290043
 #define UID_SLAVE_C3 0x29004C
@@ -533,10 +533,14 @@ void setup_routine()
 		case UID_MASTER_A:
 		case UID_MASTER_B:
 		case UID_MASTER_C:
-			spin.version.setBoardVersion(TWIST_v_1_1_2);
-			twist.setVersion(shield_TWIST_V1_2);
+			// spin.version.setBoardVersion(TWIST_v_1_1_2);
+			// twist.setVersion(shield_TWIST_V1_2);
+			// twist.initAllBuck(); // initialize in buck mode leg1 and leg2
+			// communication.sync.initSlave(TWIST_v_1_1_2);
+			spin.version.setBoardVersion(TWIST_v_1_1_4);
+			twist.setVersion(shield_TWIST_V1_4);
 			twist.initAllBuck(); // initialize in buck mode leg1 and leg2
-			communication.sync.initSlave(TWIST_v_1_1_2);
+			communication.sync.initSlave(TWIST_v_1_1_4);
 			is_master_phase = true;
 		break;
 		default:
@@ -570,50 +574,149 @@ void setup_routine()
 			spin_mode = MASTER_A;
 			control_mode = MASTER;
 			/* TWIST V1.2 not calibrated */
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_A1:
 			spin_mode = SLAVE_A1;
 			control_mode = SLAVE;
 			// not sure of calibration
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
+		
+		case UID_SLAVE_A2:
+			spin_mode = SLAVE_A2;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_A3:
+			spin_mode = SLAVE_A3;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_A4:
+			spin_mode = SLAVE_A4;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_A5:
+			spin_mode = SLAVE_A5;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_A6:
+			spin_mode = SLAVE_A6;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_A7:
+			spin_mode = SLAVE_A7;
+			control_mode = SLAVE;
+		break;
+
+
 		case UID_MASTER_B:
 			spin_mode = MASTER_B;
 			control_mode = MASTER;
 			/* TWIST V1.2 not calibrated */
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_B1:
 			spin_mode = SLAVE_B1;
 			control_mode = SLAVE;
 			// not sure of calibration
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
+
+		case UID_SLAVE_B2:
+			spin_mode = SLAVE_B2;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_B3:
+			spin_mode = SLAVE_B3;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_B4:
+			spin_mode = SLAVE_B4;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_B5:
+			spin_mode = SLAVE_B5;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_B6:
+			spin_mode = SLAVE_B6;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_B7:
+			spin_mode = SLAVE_B7;
+			control_mode = SLAVE;
+		break;
+
+
+
+
 		case UID_MASTER_C:
 			spin_mode = MASTER_C;
 			control_mode = MASTER;
 			/* TWIST V1.2 not calibrated */
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_C1:
 			spin_mode = SLAVE_C1;
 			control_mode = SLAVE;
 			// not sure of calibration
-			data.setParameters(I1_LOW, 0.005, -10.0);
-			data.setParameters(I2_LOW, 0.005, -10.0);
-			data.setParameters(V_HIGH, 0.030, 0.0);
+			// data.setParameters(I1_LOW, 0.005, -10.0);
+			// data.setParameters(I2_LOW, 0.005, -10.0);
+			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
+
+		case UID_SLAVE_C2:
+			spin_mode = SLAVE_C2;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_C3:
+			spin_mode = SLAVE_C3;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_C4:
+			spin_mode = SLAVE_C4;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_C5:
+			spin_mode = SLAVE_C5;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_C6:
+			spin_mode = SLAVE_C6;
+			control_mode = SLAVE;
+		break;
+
+		case UID_SLAVE_C7:
+			spin_mode = SLAVE_C7;
+			control_mode = SLAVE;
+		break;
+
+
+
 	}
 	// PR RESONANT
 	prop_res_leg1.init(pr_params);
