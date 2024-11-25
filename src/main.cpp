@@ -52,12 +52,43 @@
  * 1 byte for identifiant */
 #define DMA_BUFFER_SIZE 10
 
+// #define UID_MASTER_A 0x3A004D
+// #define UID_SLAVE_A1 0x350030
+// #define UID_MASTER_B 0x58002F
+// #define UID_SLAVE_B1 0x340051
+// #define UID_MASTER_C 0x400040
+// #define UID_SLAVE_C1 0x3A004F
+
+// PHASE A
 #define UID_MASTER_A 0x3A004D
-#define UID_SLAVE_A1 0x350030
+#define UID_SLAVE_A1 0x2B004E
+#define UID_SLAVE_A2 0x2A004B
+#define UID_SLAVE_A3 0x2A004D
+#define UID_SLAVE_A4 0x2A0053
+#define UID_SLAVE_A5 0x2B0041
+#define UID_SLAVE_A6 0x270050
+#define UID_SLAVE_A7 0x290050
+
+// PHASE B
 #define UID_MASTER_B 0x58002F
-#define UID_SLAVE_B1 0x340051
+#define UID_SLAVE_B1 0x2B001A
+#define UID_SLAVE_B2 0x27003E
+#define UID_SLAVE_B3 0x290047
+#define UID_SLAVE_B4 0x2B0043
+#define UID_SLAVE_B5 0x2A0045
+#define UID_SLAVE_B6 0x2B0025
+#define UID_SLAVE_B7 0x2A0033
+
+// PHASE C
 #define UID_MASTER_C 0x400040
-#define UID_SLAVE_C1 0x3A004F
+#define UID_SLAVE_C1 0x290028
+#define UID_SLAVE_C2 0x290043
+#define UID_SLAVE_C3 0x29004C
+#define UID_SLAVE_C4 0x2A004E
+#define UID_SLAVE_C5 0x290049
+#define UID_SLAVE_C6 0x29004D
+#define UID_SLAVE_C7 0x290041
+
 
 enum {
 	MASTER,
@@ -66,20 +97,37 @@ enum {
 
 enum rs_id {
 	BRIDGE = 1,
-	MASTER_A = 2,
-	SLAVE_A1 = 3,
-	SLAVE_A2 = 4,
-	MASTER_B = 5,
-	SLAVE_B1 = 6,
-	SLAVE_B2 = 7,
-	MASTER_C = 8,
-	SLAVE_C1 = 9,
-	SLAVE_C2 = 10
+	MASTER_A = 10,
+	SLAVE_A1 = 11,
+	SLAVE_A2 = 12,
+	SLAVE_A3 = 13,
+	SLAVE_A4 = 14,
+	SLAVE_A5 = 15,
+	SLAVE_A6 = 16,
+	SLAVE_A7 = 17,
+	MASTER_B = 20,
+	SLAVE_B1 = 21,
+	SLAVE_B2 = 22,
+	SLAVE_B3 = 23,
+	SLAVE_B4 = 24,
+	SLAVE_B5 = 25,
+	SLAVE_B6 = 26,
+	SLAVE_B7 = 27,
+	MASTER_C = 30,
+	SLAVE_C1 = 31,
+	SLAVE_C2 = 32,
+	SLAVE_C3 = 33,
+	SLAVE_C4 = 34,
+	SLAVE_C5 = 35,
+	SLAVE_C6 = 36,
+	SLAVE_C7 = 37
 };
 enum rs_id spin_mode;
 static bool is_master_phase;
 
-char TXT_ID[11][10] = {"_", "Bridge", "MASTER_A", "SLAVE_A1", "SLAVE_A2", "MASTER_B", "SLAVE_B1", "SLAVE_B2", "MASTER_C", "SLAVE_C1", "SLAVE_C2"};
+char TXT_ID[26][10] = {"_", "Bridge", "MASTER_A", "SLAVE_A1", "SLAVE_A2", "SLAVE_A3", "SLAVE_A4", "SLAVE_A5", "SLAVE_A6", "SLAVE_A7",  
+									  "MASTER_B", "SLAVE_B1", "SLAVE_B2", "SLAVE_B3", "SLAVE_B4", "SLAVE_B5", "SLAVE_B6", "SLAVE_B7", 
+									  "MASTER_C", "SLAVE_C1", "SLAVE_C2", "SLAVE_C3", "SLAVE_C4", "SLAVE_C5", "SLAVE_C6", "SLAVE_C7"};
 #define CURRENT_LIMIT         9.0F
 #define VOLTAGE_SCALE         50.0F
 // retrieve identifiant
@@ -251,6 +299,11 @@ void reception_function(void)
 		switch (spin_mode) {
 			case SLAVE_A1:
 			case SLAVE_A2:
+			case SLAVE_A3:
+			case SLAVE_A4:
+			case SLAVE_A5:
+			case SLAVE_A6:
+			case SLAVE_A7:
 				if (rs_id == MASTER_A) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -264,6 +317,11 @@ void reception_function(void)
 			break;
 			case SLAVE_B1:
 			case SLAVE_B2:
+			case SLAVE_B3:
+			case SLAVE_B4:
+			case SLAVE_B5:
+			case SLAVE_B6:
+			case SLAVE_B7:
 				if (rs_id == MASTER_B) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -277,6 +335,11 @@ void reception_function(void)
 			break;
 			case SLAVE_C1:
 			case SLAVE_C2:
+			case SLAVE_C3:
+			case SLAVE_C4:
+			case SLAVE_C5:
+			case SLAVE_C6:
+			case SLAVE_C7:
 				if (rs_id == MASTER_C) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -347,18 +410,33 @@ inline void get_datas_from_rs485()
 		case MASTER_A:
 		case SLAVE_A1:
 		case SLAVE_A2:
+		case SLAVE_A3:
+		case SLAVE_A4:
+		case SLAVE_A5:
+		case SLAVE_A6:
+		case SLAVE_A7:
 			Vref = from_12bits(data_bridge.Va, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
 		case MASTER_B:
 		case SLAVE_B1:
 		case SLAVE_B2:
+		case SLAVE_B3:
+		case SLAVE_B4:
+		case SLAVE_B5:
+		case SLAVE_B6:
+		case SLAVE_B7:
 			Vref = from_12bits(data_bridge.Vb, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
 		case MASTER_C:
 		case SLAVE_C1:
 		case SLAVE_C2:
+		case SLAVE_C3:
+		case SLAVE_C4:
+		case SLAVE_C5:
+		case SLAVE_C6:
+		case SLAVE_C7:
 			Vref = from_12bits(data_bridge.Vc, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
