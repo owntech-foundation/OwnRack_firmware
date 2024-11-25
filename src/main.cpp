@@ -55,16 +55,32 @@
 	   // identifiant
 enum rs_id {
 	BRIDGE = 1,
-	MASTER_A = 2,
-	SLAVE_A1 = 3,
-	SLAVE_A2 = 4,
-	MASTER_B = 5,
-	SLAVE_B1 = 6,
-	SLAVE_B2 = 7,
-	MASTER_C = 8,
-	SLAVE_C1 = 9,
-	SLAVE_C2 = 10
+	MASTER_A = 10,
+	SLAVE_A1 = 11,
+	SLAVE_A2 = 12,
+	SLAVE_A3 = 13,
+	SLAVE_A4 = 14,
+	SLAVE_A5 = 15,
+	SLAVE_A6 = 16,
+	SLAVE_A7 = 17,
+	MASTER_B = 20,
+	SLAVE_B1 = 21,
+	SLAVE_B2 = 22,
+	SLAVE_B3 = 23,
+	SLAVE_B4 = 24,
+	SLAVE_B5 = 25,
+	SLAVE_B6 = 26,
+	SLAVE_B7 = 27,
+	MASTER_C = 30,
+	SLAVE_C1 = 31,
+	SLAVE_C2 = 32,
+	SLAVE_C3 = 33,
+	SLAVE_C4 = 34,
+	SLAVE_C5 = 35,
+	SLAVE_C6 = 36,
+	SLAVE_C7 = 37
 };
+
 enum rs_id spin_mode;
 
 struct bridge_frame {
