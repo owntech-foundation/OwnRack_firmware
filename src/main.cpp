@@ -56,29 +56,11 @@
 enum rs_id {
 	BRIDGE = 1,
 	MASTER_A = 2,
-	SLAVE_A1 = 3,
-	SLAVE_A2 = 4,
-	SLAVE_A3 = 5,
-	SLAVE_A4 = 6,
-	SLAVE_A5 = 7,
-	SLAVE_A6 = 8,
-	SLAVE_A7 = 9,
-	MASTER_B = 10,
-	SLAVE_B1 = 11,
-	SLAVE_B2 = 12,
-	SLAVE_B3 = 13,
-	SLAVE_B4 = 14,
-	SLAVE_B5 = 15,
-	SLAVE_B6 = 16,
-	SLAVE_B7 = 17,
-	MASTER_C = 18,
-	SLAVE_C1 = 19,
-	SLAVE_C2 = 20,
-	SLAVE_C3 = 21,
-	SLAVE_C4 = 22,
-	SLAVE_C5 = 23,
-	SLAVE_C6 = 24,
-	SLAVE_C7 = 25
+	MASTER_B = 3,
+	MASTER_C = 4,
+	SLAVE_A = 5,
+	SLAVE_B = 6,
+	SLAVE_C = 7
 };
 
 enum rs_id spin_mode;
