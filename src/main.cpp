@@ -182,10 +182,11 @@ static const float32_t Ts = 100.e-6F;
 
 static uint8_t angle_index;
 static float32_t hall_angle;
-static PllAngle pllangle = controlLibFactory.pllAngle(Ts, 10.0F, 0.04F);
+static PllAngle pllangle = controlLibFactory.pllAngle(Ts, 1.0F, 0.04F);
 static PllDatas pllDatas;
 static float32_t angle_filtered;
 static float32_t w_meas;
+static float32_t f_meas;
 /*
  * one sector for one index value
  * index = H1*2^0 + H2*2^1 + H3*2^2
@@ -304,16 +305,22 @@ bool sync_problem = false;
 static uint8_t rs_id;
 char status_icon[2][4] = {{0xF0, 0x9F, 0x91, 0x8C}, {0xF0, 0x9F, 0x92, 0xA9}};
 
-inline void get_angle_and_pulsation() {
+inline void get_angle_and_pulsation_sin_cos() {
 	uint8_t data_validity;
 	float32_t value;
 	
 	value = data.getLatest(ANALOG_SIN, &data_validity);
 	
+	if(value > value_max) value_max = value;
+	if(value < value_min) value_min = value;
+
 	if (data_validity == DATA_IS_OK) {
 		sin_value = SINCOS_AMP * (value - SINCOS_OFFSET);
 	}
 	
+	if(sin_value > sin_value_max) sin_value_max = sin_value;
+	if(sin_value < sin_value_min) sin_value_min = sin_value;
+
 	value = data.getLatest(ANALOG_COS, &data_validity);
 	
 	if (data_validity == DATA_IS_OK) {
@@ -326,21 +333,23 @@ inline void get_angle_and_pulsation() {
 	LL_CORDIC_WriteData(CORDIC, cos_theta); // give X data
 	
 	LL_CORDIC_WriteData(CORDIC, sin_theta); // give y data
+
 	
-	// angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of
+	angle_cordic = PI * q31_to_f32((int32_t)LL_CORDIC_ReadData(CORDIC)); // retrieve phase of
 	
 	// x+iy
-	w0_ref = 2.0F * PI * f0_ref;
+	// w0_ref = 2.0F * PI * f0_ref;
 	// ANGLE OPEN LOOP
 	
-	angle_cordic += w0_ref * control_task_period * 1.0e-6F;
+	// angle_cordic += w0_ref * control_task_period * 1.0e-6F;
 	
-	angle_cordic = ot_modulo_2pi(angle_cordic);
+	// angle_cordic = ot_modulo_2pi(angle_cordic);
 	
 	pll_datas = pllAngle.calculateWithReturn(angle_cordic);
 	
-	angle = ot_modulo_2pi((PI - pll_datas.angle));
-	w = pll_datas.w;
+	angle_filtered = ot_modulo_2pi(pll_datas.angle);
+	w_meas = pll_datas.w;
+	f_meas = pll_datas.w/(2*PI * -10);
 }
 
 /**
@@ -531,7 +540,7 @@ void setup_routine()
 	// pi for q axis
 	pi_q.init(pid_p);
 	pi_q.reset();
-	if (pllAngle.init(Ts, 400.0, 0.05F) == -EINVAL) {
+	if (pllAngle.init(Ts, 10.0, 0.05F) == -EINVAL) {
 		// control_state = OVERCURRENT;
 	}
 	pllAngle.reset(0.F);
@@ -685,6 +694,8 @@ void loop_application_task()
 	printk("3? 		     = %d\n", last_receive_calls);
 	printk("Iq_ref 	     = %6.2f [A]\n", (double)Iq_ref);
 	printk("    f0       = %6.2f [Hz]\n", (double)f0_ref);
+	printk(" w_sin_cos   = %6.2f [rad/s]\n", (double)w_meas);
+	printk(" f_sin_cos   = %6.2f [Hz]\n", (double)f_meas);
 	printk("Vh a 	     = %.2f [V]\n", (double) from_12bits(data_master_a.VH, 100.0));
 	printk("Vh b  	     = %.2f [V]\n", (double) from_12bits(data_master_b.VH, 100.0));
 	printk("Vh c 	     = %.2f [V]\n", (double) from_12bits(data_master_c.VH, 100.0));
@@ -758,8 +769,8 @@ __attribute__((section(".ramfunc"))) void loop_control_task()
 	counter_time++;
 	// spin.gpio.setPin(PC8);
 
-	// get_angle_and_pulsation();
-	get_position_and_speed();
+	get_angle_and_pulsation_sin_cos();
+	// get_position_and_speed();
 	// w_meas = 0;
 	
 	get_rs485_datas();
