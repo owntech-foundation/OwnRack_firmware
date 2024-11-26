@@ -392,13 +392,13 @@ inline void get_position_and_speed()
 	angle_filtered = pllDatas.angle;
 	w_meas = w_mes_filter.calculateWithReturn(pllDatas.w);
 
-	// w0_ref = 2.0F * PI * f0_ref;
 	// ANGLE OPEN LOOP
+	w0_ref = 2.0F * PI * f0_ref;
 	
-	// angle_filtered += w0_ref * control_task_period * 1.0e-6F;
+	angle_filtered += w0_ref * control_task_period * 1.0e-6F;
 	
-	// angle_filtered = ot_modulo_2pi(angle_filtered);
-	// w_meas = w0_ref;
+	angle_filtered = ot_modulo_2pi(angle_filtered);
+	w_meas = w0_ref;
 
 
 
