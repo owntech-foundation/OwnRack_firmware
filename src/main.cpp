@@ -98,36 +98,16 @@ enum {
 enum rs_id {
 	BRIDGE = 1,
 	MASTER_A = 2,
-	SLAVE_A1 = 3,
-	SLAVE_A2 = 4,
-	SLAVE_A3 = 5,
-	SLAVE_A4 = 6,
-	SLAVE_A5 = 7,
-	SLAVE_A6 = 8,
-	SLAVE_A7 = 9,
-	MASTER_B = 10,
-	SLAVE_B1 = 11,
-	SLAVE_B2 = 12,
-	SLAVE_B3 = 13,
-	SLAVE_B4 = 14,
-	SLAVE_B5 = 15,
-	SLAVE_B6 = 16,
-	SLAVE_B7 = 17,
-	MASTER_C = 18,
-	SLAVE_C1 = 19,
-	SLAVE_C2 = 20,
-	SLAVE_C3 = 21,
-	SLAVE_C4 = 22,
-	SLAVE_C5 = 23,
-	SLAVE_C6 = 24,
-	SLAVE_C7 = 25
+	MASTER_B = 3,
+	MASTER_C = 4,
+	SLAVE_A = 5,
+	SLAVE_B = 6,
+	SLAVE_C = 7
 };
 enum rs_id spin_mode;
 static bool is_master_phase;
 
-char TXT_ID[26][10] = {"_", "Bridge", "MASTER_A", "SLAVE_A1", "SLAVE_A2", "SLAVE_A3", "SLAVE_A4", "SLAVE_A5", "SLAVE_A6", "SLAVE_A7",  
-									  "MASTER_B", "SLAVE_B1", "SLAVE_B2", "SLAVE_B3", "SLAVE_B4", "SLAVE_B5", "SLAVE_B6", "SLAVE_B7", 
-									  "MASTER_C", "SLAVE_C1", "SLAVE_C2", "SLAVE_C3", "SLAVE_C4", "SLAVE_C5", "SLAVE_C6", "SLAVE_C7"};
+char TXT_ID[8][10] = {"_", "Bridge", "MASTER_A", "MASTER_B", "MASTER_C", "SLAVE_A", "SLAVE_B", "SLAVE_C"};
 #define CURRENT_LIMIT         9.0F
 #define VOLTAGE_SCALE         50.0F
 // retrieve identifiant
@@ -297,13 +277,7 @@ void reception_function(void)
 	else
 	{
 		switch (spin_mode) {
-			case SLAVE_A1:
-			case SLAVE_A2:
-			case SLAVE_A3:
-			case SLAVE_A4:
-			case SLAVE_A5:
-			case SLAVE_A6:
-			case SLAVE_A7:
+			case SLAVE_A:
 				if (rs_id == MASTER_A) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -315,13 +289,7 @@ void reception_function(void)
 					data_slave = datas_to_send;
 				}
 			break;
-			case SLAVE_B1:
-			case SLAVE_B2:
-			case SLAVE_B3:
-			case SLAVE_B4:
-			case SLAVE_B5:
-			case SLAVE_B6:
-			case SLAVE_B7:
+			case SLAVE_B:
 				if (rs_id == MASTER_B) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -333,13 +301,7 @@ void reception_function(void)
 					data_slave = datas_to_send;
 				}
 			break;
-			case SLAVE_C1:
-			case SLAVE_C2:
-			case SLAVE_C3:
-			case SLAVE_C4:
-			case SLAVE_C5:
-			case SLAVE_C6:
-			case SLAVE_C7:
+			case SLAVE_C:
 				if (rs_id == MASTER_C) {
 					data_slave = *(phase_frame_t *) buffer_rx;
 				}
@@ -408,35 +370,17 @@ inline void get_datas_from_rs485()
 
 	switch (spin_mode) {
 		case MASTER_A:
-		case SLAVE_A1:
-		case SLAVE_A2:
-		case SLAVE_A3:
-		case SLAVE_A4:
-		case SLAVE_A5:
-		case SLAVE_A6:
-		case SLAVE_A7:
+		case SLAVE_A:
 			Vref = from_12bits(data_bridge.Va, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
 		case MASTER_B:
-		case SLAVE_B1:
-		case SLAVE_B2:
-		case SLAVE_B3:
-		case SLAVE_B4:
-		case SLAVE_B5:
-		case SLAVE_B6:
-		case SLAVE_B7:
+		case SLAVE_B:
 			Vref = from_12bits(data_bridge.Vb, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
 		case MASTER_C:
-		case SLAVE_C1:
-		case SLAVE_C2:
-		case SLAVE_C3:
-		case SLAVE_C4:
-		case SLAVE_C5:
-		case SLAVE_C6:
-		case SLAVE_C7:
+		case SLAVE_C:
 			Vref = from_12bits(data_bridge.Vc, VOLTAGE_SCALE);
 			Iref = from_12bits(data_slave.I1, 50.0, 25.0);
 		break;
@@ -579,7 +523,7 @@ void setup_routine()
 			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_A1:
-			spin_mode = SLAVE_A1;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 			// not sure of calibration
 			// data.setParameters(I1_LOW, 0.005, -10.0);
@@ -588,32 +532,32 @@ void setup_routine()
 		break;
 		
 		case UID_SLAVE_A2:
-			spin_mode = SLAVE_A2;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_A3:
-			spin_mode = SLAVE_A3;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_A4:
-			spin_mode = SLAVE_A4;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_A5:
-			spin_mode = SLAVE_A5;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_A6:
-			spin_mode = SLAVE_A6;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_A7:
-			spin_mode = SLAVE_A7;
+			spin_mode = SLAVE_A;
 			control_mode = SLAVE;
 		break;
 
@@ -627,7 +571,7 @@ void setup_routine()
 			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_B1:
-			spin_mode = SLAVE_B1;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 			// not sure of calibration
 			// data.setParameters(I1_LOW, 0.005, -10.0);
@@ -636,32 +580,32 @@ void setup_routine()
 		break;
 
 		case UID_SLAVE_B2:
-			spin_mode = SLAVE_B2;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_B3:
-			spin_mode = SLAVE_B3;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_B4:
-			spin_mode = SLAVE_B4;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_B5:
-			spin_mode = SLAVE_B5;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_B6:
-			spin_mode = SLAVE_B6;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_B7:
-			spin_mode = SLAVE_B7;
+			spin_mode = SLAVE_B;
 			control_mode = SLAVE;
 		break;
 
@@ -677,7 +621,7 @@ void setup_routine()
 			// data.setParameters(V_HIGH, 0.030, 0.0);
 		break;
 		case UID_SLAVE_C1:
-			spin_mode = SLAVE_C1;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 			// not sure of calibration
 			// data.setParameters(I1_LOW, 0.005, -10.0);
@@ -686,32 +630,32 @@ void setup_routine()
 		break;
 
 		case UID_SLAVE_C2:
-			spin_mode = SLAVE_C2;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_C3:
-			spin_mode = SLAVE_C3;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_C4:
-			spin_mode = SLAVE_C4;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_C5:
-			spin_mode = SLAVE_C5;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_C6:
-			spin_mode = SLAVE_C6;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
 		case UID_SLAVE_C7:
-			spin_mode = SLAVE_C7;
+			spin_mode = SLAVE_C;
 			control_mode = SLAVE;
 		break;
 
